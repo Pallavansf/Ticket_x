@@ -1,0 +1,35 @@
+# .NET build output
+**/bin/
+**/obj/
+# Angular dependencies and builds
+**/node_modules/
+**/dist/
+**/.angular/
+# Environment secrets
+.env
+.env.*
+!.env.example
+**/secrets.json
+**/secrets.*.json
+# Certificates and private keys
+*.pfx
+*.p12
+*.key
+# Local logs and temporary files
+*.log
+temp/
+temp-test-output.txt
+# IDE files
+.vs/
+.idea/
+package-lock.zip
+
+# Generated .NET artifacts
+**/bin/
+**/obj/
+# Test result output
+**/TestResults/
+# Local debug project output
+.debugwf/bin/
+.debugwf/obj/
+.debugwf/

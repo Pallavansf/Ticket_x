@@ -1,0 +1,909 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Json;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
+using PA.Tickets.Api;
+using PA.Tickets.Application.Execution;
+using PA.Tickets.Domain.Tickets;
+using PA.Tickets.Infrastructure.Execution;
+using PA.Tickets.Infrastructure.Persistence;
+
+namespace PA.Tickets.Domain.Tests;
+
+public sealed class PostgreSqlApiE2ETests
+{
+    private const string JwtTestIssuer = "https://issuer.test.pa-tickets.invalid";
+    private const string JwtTestAudience = "pa-tickets-security-tests";
+    private const string JwtTestSigningKey = "only-for-automated-tests-32-byte-key";
+
+    [Fact]
+    public async Task Health_routes_separate_liveness_and_readiness_and_return_safe_correlation_ids()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot());
+        using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+
+        using var liveRequest = new HttpRequestMessage(HttpMethod.Get, "/health/live");
+        liveRequest.Headers.Add("X-Correlation-ID", "unsafe/../value");
+        using var live = await client.SendAsync(liveRequest);
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+        var generated = Assert.Single(live.Headers.GetValues("X-Correlation-ID"));
+        Assert.Matches("^[a-f0-9]{32}$", generated);
+        var liveBody = await live.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("connection", liveBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("password", liveBody, StringComparison.OrdinalIgnoreCase);
+
+        using var readyRequest = new HttpRequestMessage(HttpMethod.Get, "/health/ready");
+        readyRequest.Headers.Add("X-Correlation-ID", "ops-123");
+        using var ready = await client.SendAsync(readyRequest);
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        Assert.Equal("ops-123", Assert.Single(ready.Headers.GetValues("X-Correlation-ID")));
+    }
+    [Fact]
+    public async Task Api_v1_contract_is_explicit_and_unsupported_versions_and_legacy_routes_are_not_mapped()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot());
+        using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+
+        var v1 = await client.GetAsync("/api/v1/system/status");
+        Assert.Equal(HttpStatusCode.OK, v1.StatusCode);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/v2/system/status")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/system/status")).StatusCode);
+
+        var swagger = await client.GetAsync("/swagger/v1/swagger.json");
+        Assert.Equal(HttpStatusCode.OK, swagger.StatusCode);
+        var swaggerJson = await swagger.Content.ReadAsStringAsync();
+        Assert.Contains("/api/v1/tickets", swaggerJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/tickets", swaggerJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reporting_catalogue_and_validation_are_controlled_and_versioned()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot(), requireReady: false);
+        using var client = api.ClientFor(9001);
+
+        var catalogue = await client.GetAsync("/api/v1/reports");
+        var catalogueBody = await catalogue.Content.ReadAsStringAsync();
+        Assert.True(catalogue.StatusCode == HttpStatusCode.OK, catalogueBody);
+        Assert.Contains("ticket-volume", catalogueBody, StringComparison.Ordinal);
+        Assert.Contains("assignment-workload", catalogueBody, StringComparison.Ordinal);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/api/v1/reports/unknown")).StatusCode);
+        var invalid = await client.PostAsJsonAsync("/api/v1/reports/ticket-volume/query", new { Page = 0, PageSize = 101 });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+        var valid = await client.PostAsJsonAsync("/api/v1/reports/ticket-status-summary/query", new { CreatedFrom = "2020-01-01", CreatedTo = "2030-01-01", Sort = "status", Page = 1, PageSize = 25 });
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+        var body = await valid.Content.ReadAsStringAsync();
+        Assert.Contains("ticket-status-summary", body, StringComparison.Ordinal);        foreach (var report in new[] { "ticket-volume", "ticket-aging", "assignment-workload", "department-workload", "team-workload", "assignee-workload", "open-ticket-backlog", "ticket-type-summary", "ticket-aging-buckets", "tickets-waiting", "incident-summary", "problem-summary", "change-summary", "lifecycle", "reopened-tickets", "sla-response-performance", "sla-resolution-performance", "sla-breached-tickets", "pending-approvals", "approval-history" })
+        {
+            var response = await client.PostAsJsonAsync($"/api/v1/reports/{report}/query", new { Page = 1, PageSize = 25 });
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+    }
+
+    [Fact]
+    
+    public async Task Auditor_reporting_http_api_reads_persisted_records_and_enforces_controls()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot(), false, false);
+        var ticketId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + 77;
+        var auditId = ticketId + 1;
+        var configurationAuditId = auditId + 2;
+        var configurationEntityId = $"status-{ticketId}";
+        var eventId = ticketId + 2;
+        var outOfScopeTicketId = ticketId + 100;
+        var workflowId = ticketId + 200;
+        var workflowVersionId = ticketId + 201;
+        var workflowStepDefinitionId = ticketId + 202;
+        var workflowInstanceId = ticketId + 203;
+        var workflowStepInstanceId = ticketId + 204;
+        var workflowHistoryId = ticketId + 205;
+        var approvalInstanceId = ticketId + 206;
+        var approvalId = ticketId + 207;
+        var approvalHistoryId = ticketId + 208;
+        var assignmentId = ticketId + 209;
+        var attachmentId = ticketId + 210;
+        var evidenceId = ticketId + 211;
+        var communicationId = ticketId + 212;
+        await using var db = CreateTicketsDb();
+        try
+        {
+            var currentTime = DateTimeOffset.UtcNow;
+            var now = new DateTimeOffset(currentTime.Ticks - currentTime.Ticks % 10, TimeSpan.Zero);
+            db.Tickets.AddRange(new TicketRow { Id = ticketId, Number = $"AUD-{ticketId}", TypeId = 1, StatusId = 1, RequestedBy = 1001, CreatedBy = 1001, Subject = "Auditor integration fixture", CreatedAt = now, CurrentAssignee = 9999, CurrentDepartmentId = 501, CurrentTeamId = 601 }, new TicketRow { Id = outOfScopeTicketId, Number = $"AUD-{outOfScopeTicketId}", TypeId = 1, StatusId = 1, RequestedBy = 1001, CreatedBy = 1001, Subject = "Out of scope auditor fixture", CreatedAt = now, CurrentDepartmentId = 999, CurrentTeamId = 999 });
+            db.Audits.AddRange(
+                new AuditRow { Id = auditId, EntityType = "TICKET", EntityId = ticketId.ToString(), Action = "AUDITOR_TEST_CREATED", ActorId = 9999, At = now, Reason = "auditor-integration", Hash = ComputeAuditHash("TICKET", ticketId.ToString(), "AUDITOR_TEST_CREATED", 9999, now, null, null, "auditor-integration", null) },
+                new AuditRow { Id = auditId + 1, EntityType = "TICKET", EntityId = outOfScopeTicketId.ToString(), Action = "OUT_OF_SCOPE_AUDIT", ActorId = 1001, At = now, Reason = "out-of-scope", Hash = $"hash-{auditId + 1}" },
+                new AuditRow { Id = configurationAuditId, EntityType = "STATUS_DEFINITION", EntityId = configurationEntityId, Action = "STATUS_UPDATED", ActorId = 9001, At = now, OldValue = "private old value", NewValue = "private new value", Reason = "private audit reason", Hash = ComputeAuditHash("STATUS_DEFINITION", configurationEntityId, "STATUS_UPDATED", 9001, now, "private old value", "private new value", "private audit reason", null) });
+            db.Events.AddRange(new EventRow { Id = eventId, TicketId = ticketId, Type = "AUDITOR_TEST_EVENT", Category = "LIFECYCLE", ActorId = 9999, At = now, Reason = "auditor-integration" }, new EventRow { Id = eventId + 1, TicketId = outOfScopeTicketId, Type = "OUT_OF_SCOPE_EVENT", Category = "LIFECYCLE", ActorId = 1001, At = now, Reason = "out-of-scope" });
+            db.Assignments.Add(new AssignmentRow { Id = assignmentId, TicketId = ticketId, AssignedTo = 9999, AssignedBy = 9999, AssignedAt = now, Type = "WORK_ITEM", Reason = "auditor-assignment" });
+            db.Attachments.Add(new AttachmentRow { Id = attachmentId, TicketId = ticketId, Type = "EVIDENCE", FileName = "evidence.txt", ContentType = "text/plain", FileSize = 12, StorageProvider = "TEST", StorageReference = "secret-storage-ref", Sha256Hash = "sha256-test", Description = "non-sensitive metadata", CurrentVersion = 1 });
+            db.Evidence.Add(new EvidenceRow { Id = evidenceId, TicketId = ticketId, AttachmentId = attachmentId, Code = $"AUD-EVIDENCE-{evidenceId}", Type = "DOCUMENT", Description = "persisted evidence", Status = "VALID", CreatedAt = now, CreatedBy = 9999 });
+            db.Communications.Add(new CommunicationRow { Id = communicationId, TicketId = ticketId, PublicId = $"comm-{communicationId}", CommunicationType = "SYSTEM", Channel = "EMAIL", ProviderCode = "TEST_PROVIDER", TemplateCode = "AUDITOR_TEMPLATE", Status = "DELIVERED", Recipient = "secret@example.test", Subject = "hidden subject", Body = "secret payload", StructuredPayload = "secret-json", RetryCount = 0, CommunicationAt = now, RecordedAt = now, RecordedBy = 9999, CorrelationId = "auditor-communication", IdempotencyKey = $"auditor-communication-{communicationId}" });
+            await db.SaveChangesAsync();
+            await using var execution = CreateExecutionDb();
+            execution.WorkflowDefinitions.Add(new WorkflowDefinitionRow { Id = workflowId, Code = $"AUD-{workflowId}", Name = "Auditor workflow", CreatedBy = 9999, CreatedAt = now });
+            execution.WorkflowVersions.Add(new WorkflowVersionRow { Id = workflowVersionId, WorkflowId = workflowId, VersionNo = 1, Status = "PUBLISHED", CreatedBy = 9999, CreatedAt = now });
+            execution.WorkflowStepDefinitions.Add(new WorkflowStepDefinitionRow { Id = workflowStepDefinitionId, VersionId = workflowVersionId, StepNo = 1, Code = "AUD", Name = "Auditor step", Type = "WORK", ExecutionMode = "ALLREQUIRED" });
+            execution.WorkflowInstances.Add(new WorkflowInstanceRow { Id = workflowInstanceId, TicketId = ticketId, VersionId = workflowVersionId, Status = "RUNNING" });
+            execution.WorkflowSteps.Add(new WorkflowStepInstanceRow { Id = workflowStepInstanceId, WorkflowInstanceId = workflowInstanceId, WorkflowStepId = workflowStepDefinitionId, Status = "COMPLETED" });
+            execution.WorkflowStepHistory.Add(new WorkflowStepHistoryRow { Id = workflowHistoryId, StepInstanceId = workflowStepInstanceId, Action = "AUDITOR_WORKFLOW_EVENT", OldStatus = "PENDING", NewStatus = "COMPLETED", ActorId = 9999, EventAt = now, CorrelationId = "auditor-workflow" });
+            await execution.SaveChangesAsync();
+            execution.ApprovalInstances.Add(new ApprovalInstanceExecutionRow { Id = approvalInstanceId, TicketId = ticketId, WorkflowStepInstanceId = workflowStepInstanceId, Mode = "ANY_ONE", Status = "PENDING", RequesterUserId = 9999, CreatorUserId = 9999, CreatedAt = now });
+            await execution.SaveChangesAsync();
+            execution.Approvals.Add(new ApprovalExecutionRow { Id = approvalId, ApprovalInstanceId = approvalInstanceId, TicketId = ticketId, Level = 1, Required = true, Active = true, Status = "PENDING", ApproverId = 9999 });
+            await execution.SaveChangesAsync();
+            execution.ApprovalHistory.Add(new ApprovalHistoryExecutionRow { Id = approvalHistoryId, ApprovalId = approvalId, Action = "AUDITOR_APPROVAL_EVENT", ActorId = 9999, Comment = "approval metadata", CreatedAt = now, CorrelationId = "auditor-approval" });
+            await execution.SaveChangesAsync();            using var auditor = api.ClientFor(9999);
+            var catalogue = await auditor.GetAsync("/api/v1/auditor/reports");
+            Assert.Equal(HttpStatusCode.OK, catalogue.StatusCode);
+            var catalogueBody = await catalogue.Content.ReadAsStringAsync();
+            Assert.Contains("AUDIT_ACTIVITY", catalogueBody, StringComparison.Ordinal);
+            Assert.DoesNotContain("SECURITY_AUDIT", catalogueBody, StringComparison.Ordinal);
+            var auditCountBeforeVerification = await db.Audits.CountAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketId.ToString());
+            var verification = await auditor.GetAsync($"/api/v1/auditor/reports/tickets/{ticketId}/integrity");
+            Assert.Equal(HttpStatusCode.OK, verification.StatusCode);
+            var verificationBody = await verification.Content.ReadAsStringAsync();
+            using (var verificationJson = JsonDocument.Parse(verificationBody))
+            {
+                Assert.True(verificationJson.RootElement.GetProperty("isValid").GetBoolean(), verificationBody);
+                Assert.Equal(1, verificationJson.RootElement.GetProperty("recordsVerified").GetInt32());
+            }
+            Assert.Equal(auditCountBeforeVerification, await db.Audits.CountAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketId.ToString()));
+            var configurationAuditCount = await db.Audits.CountAsync(x => x.EntityType == "STATUS_DEFINITION" && x.EntityId == configurationEntityId);
+            var configurationVerification = await auditor.GetAsync($"/api/v1/auditor/reports/configuration/STATUS_DEFINITION/{configurationEntityId}/integrity");
+            var configurationVerificationBody = await configurationVerification.Content.ReadAsStringAsync();
+            Assert.True(configurationVerification.IsSuccessStatusCode, configurationVerificationBody);
+            using (var configurationJson = JsonDocument.Parse(configurationVerificationBody))
+            {
+                Assert.True(configurationJson.RootElement.GetProperty("isValid").GetBoolean(), configurationVerificationBody);
+                Assert.Equal(1, configurationJson.RootElement.GetProperty("recordsVerified").GetInt32());
+            }
+            Assert.DoesNotContain("private old value", configurationVerificationBody, StringComparison.Ordinal);
+            Assert.DoesNotContain("private new value", configurationVerificationBody, StringComparison.Ordinal);
+            Assert.DoesNotContain("private audit reason", configurationVerificationBody, StringComparison.Ordinal);
+            Assert.Equal(configurationAuditCount, await db.Audits.CountAsync(x => x.EntityType == "STATUS_DEFINITION" && x.EntityId == configurationEntityId));
+            Assert.Equal(HttpStatusCode.Forbidden, (await api.ClientFor(9998).GetAsync($"/api/v1/auditor/reports/configuration/STATUS_DEFINITION/{configurationEntityId}/integrity")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await auditor.GetAsync($"/api/v1/auditor/reports/configuration/STATUS_TRANSITION/{ticketId}/integrity")).StatusCode);
+            var query = await auditor.PostAsJsonAsync("/api/v1/auditor/reports/AUDIT_ACTIVITY/query", new { TicketId = ticketId, Page = 1, PageSize = 25 });
+            var queryBody = await query.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, query.StatusCode);
+            Assert.Contains("AUDITOR_TEST_CREATED", queryBody, StringComparison.Ordinal);
+            var trail = await auditor.PostAsJsonAsync("/api/v1/auditor/reports/TICKET_AUDIT_TRAIL/query", new { TicketId = ticketId, Page = 1, PageSize = 25 });
+            var trailBody = await trail.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, trail.StatusCode);
+            Assert.Contains("AUDITOR_TEST_EVENT", trailBody, StringComparison.Ordinal);            foreach (var report in new[] { "WORKFLOW_AUDIT", "APPROVAL_AUDIT", "ASSIGNMENT_AUDIT", "EVIDENCE_AUDIT", "COMMUNICATION_AUDIT" })
+            {
+                var response = await auditor.PostAsJsonAsync($"/api/v1/auditor/reports/{report}/query", new { TicketId = ticketId, Page = 1, PageSize = 25 });
+                var body = await response.Content.ReadAsStringAsync();
+                Assert.True(response.IsSuccessStatusCode, $"{report}: {body}");
+                Assert.Contains(ticketId.ToString(), body, StringComparison.Ordinal);
+                Assert.DoesNotContain("secret-storage-ref", body, StringComparison.Ordinal);
+                Assert.DoesNotContain("secret@example.test", body, StringComparison.Ordinal);
+                Assert.DoesNotContain("secret payload", body, StringComparison.Ordinal);
+            }
+            var outOfScope = await auditor.PostAsJsonAsync("/api/v1/auditor/reports/AUDIT_ACTIVITY/query", new { TicketId = outOfScopeTicketId, Page = 1, PageSize = 25 });
+            var outOfScopeBody = await outOfScope.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, outOfScope.StatusCode);
+            using (var outOfScopeJson = JsonDocument.Parse(outOfScopeBody)) Assert.Equal(0, outOfScopeJson.RootElement.GetProperty("totalCount").GetInt32());
+            Assert.Equal(HttpStatusCode.NotFound, (await auditor.GetAsync($"/api/v1/auditor/reports/tickets/{outOfScopeTicketId}/integrity")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await api.ClientFor(9998).GetAsync($"/api/v1/auditor/reports/tickets/{ticketId}/integrity")).StatusCode);
+            var mixed = await auditor.PostAsJsonAsync("/api/v1/auditor/reports/TICKET_AUDIT_TRAIL/query", new { Page = 1, PageSize = 25 });
+            var mixedBody = await mixed.Content.ReadAsStringAsync();
+            Assert.Equal(HttpStatusCode.OK, mixed.StatusCode);
+            Assert.Contains("AUDITOR_TEST_EVENT", mixedBody, StringComparison.Ordinal);
+            Assert.DoesNotContain("OUT_OF_SCOPE_EVENT", mixedBody, StringComparison.Ordinal);
+            Assert.DoesNotContain(outOfScopeTicketId.ToString(), mixedBody, StringComparison.Ordinal);
+            Assert.Equal(HttpStatusCode.BadRequest, (await auditor.PostAsJsonAsync("/api/v1/auditor/reports/AUDIT_ACTIVITY/query", new { TicketId = ticketId, PageSize = 101 })).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await auditor.GetAsync("/api/v1/auditor/reports/UNKNOWN")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await auditor.GetAsync("/api/v2/auditor/reports")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await auditor.GetAsync("/api/auditor/reports")).StatusCode);
+            using var unauthenticated = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+            Assert.Equal(HttpStatusCode.Unauthorized, (await unauthenticated.GetAsync("/api/v1/auditor/reports")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await api.ClientFor(9998).GetAsync("/api/v1/auditor/reports")).StatusCode);
+        }
+        finally
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_ASSIGNMENT_ID"" = {assignmentId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVIDENCE"" where ""N_EVIDENCE_ID"" = {evidenceId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ATTACHMENT"" where ""N_ATTACHMENT_ID"" = {attachmentId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_COMMUNICATION"" where ""N_COMMUNICATION_ID"" = {communicationId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_EVENT_ID"" in ({eventId}, {eventId + 1})");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({outOfScopeTicketId})");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_entity('STATUS_DEFINITION', {configurationEntityId})");
+            await using var cleanupExecution = CreateExecutionDb();
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL_HISTORY"" where ""N_APPROVAL_HISTORY_ID"" = {approvalHistoryId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL"" where ""N_APPROVAL_ID"" = {approvalId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL_INSTANCE"" where ""N_APPROVAL_INSTANCE_ID"" = {approvalInstanceId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP_INSTANCE_HISTORY"" where ""N_STEP_INSTANCE_HISTORY_ID"" = {workflowHistoryId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP_INSTANCE"" where ""N_STEP_INSTANCE_ID"" = {workflowStepInstanceId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_INSTANCE"" where ""N_WORKFLOW_INSTANCE_ID"" = {workflowInstanceId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP"" where ""N_WORKFLOW_STEP_ID"" = {workflowStepDefinitionId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_VERSION"" where ""N_WORKFLOW_VERSION_ID"" = {workflowVersionId}");
+            await cleanupExecution.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW"" where ""N_WORKFLOW_ID"" = {workflowId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" in ({ticketId}, {outOfScopeTicketId})");
+        }
+    }
+    [Fact]
+    public async Task Jwt_bearer_pipeline_rejects_invalid_tokens_and_accepts_a_valid_subject_token()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        var root = FindRepositoryRoot();
+        await using var api = await ApiHost.StartAsync(root, useJwt: true);
+        using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+
+        var missing = await client.GetAsync("/api/v1/tickets");
+        Assert.Equal(HttpStatusCode.Unauthorized, missing.StatusCode);
+
+        var malformed = await GetWithBearerAsync(client, "not-a-jwt");
+        Assert.Equal(HttpStatusCode.Unauthorized, malformed.StatusCode);
+
+        var invalidSignature = CreateJwt("9001", JwtTestIssuer, JwtTestAudience, "wrong-test-signing-key-that-is-long-enough");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetWithBearerAsync(client, invalidSignature)).StatusCode);
+
+        var wrongIssuer = CreateJwt("9001", "https://wrong-issuer.test.invalid", JwtTestAudience, JwtTestSigningKey);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetWithBearerAsync(client, wrongIssuer)).StatusCode);
+
+        var wrongAudience = CreateJwt("9001", JwtTestIssuer, "wrong-audience", JwtTestSigningKey);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetWithBearerAsync(client, wrongAudience)).StatusCode);
+
+        var expired = CreateJwt("9001", JwtTestIssuer, JwtTestAudience, JwtTestSigningKey,
+            notBefore: DateTime.UtcNow.AddMinutes(-5), expires: DateTime.UtcNow.AddMinutes(-2));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetWithBearerAsync(client, expired)).StatusCode);
+
+        var notYetValid = CreateJwt("9001", JwtTestIssuer, JwtTestAudience, JwtTestSigningKey,
+            notBefore: DateTime.UtcNow.AddMinutes(2), expires: DateTime.UtcNow.AddMinutes(5));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await GetWithBearerAsync(client, notYetValid)).StatusCode);
+
+        var insufficientClaims = CreateJwt(null, JwtTestIssuer, JwtTestAudience, JwtTestSigningKey);
+        var missingSubjectResponse = await GetWithBearerAsync(client, insufficientClaims);
+        Assert.Equal(HttpStatusCode.Unauthorized, missingSubjectResponse.StatusCode);
+        var errorBody = await missingSubjectResponse.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(JwtTestSigningKey, errorBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("StackTrace", errorBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "error_description",
+            string.Join(" ", missingSubjectResponse.Headers.WwwAuthenticate.Select(x => x.ToString())),
+            StringComparison.OrdinalIgnoreCase);
+
+        var valid = CreateJwt("9001", JwtTestIssuer, JwtTestAudience, JwtTestSigningKey);
+        var accepted = await GetWithBearerAsync(client, valid);
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+    }
+
+    [Fact]
+    public async Task Authenticated_http_pipeline_executes_workflow_and_enforces_auth_idempotency_and_concurrency()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await EnsureWorkflowAssigneeScopesAsync();
+        var root = FindRepositoryRoot();
+        await using var api = await ApiHost.StartAsync(root);
+        var tracker = new CleanupTracker();
+        var baseId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(501, 900);
+
+        try
+        {
+            var creator = api.ClientFor(9001);
+            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Request, Subject = $"API E2E {Guid.NewGuid():N}", Description = "api postgres workflow" });
+            Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
+            var ticketId = await ReadLongAsync(create, "id");
+            tracker.TicketIds.Add(ticketId);
+
+            var classify = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/classify", new { ServiceId = 2001, CategoryId = 3001, RequestTypeId = 4001, PriorityId = 4 });
+            classify.EnsureSuccessStatusCode();
+            var route = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/route", new { DepartmentId = 501, TeamId = 601 });
+            route.EnsureSuccessStatusCode();
+
+            await SeedWorkflowAsync(baseId, ticketId, tracker, hasDownstream: true);
+
+            creator.DefaultRequestHeaders.Remove("Idempotency-Key");
+            creator.DefaultRequestHeaders.Add("Idempotency-Key", $"api-{baseId}-activate");
+            var activate = await creator.PostAsync($"/api/v1/workflow-instances/{baseId + 500}/activate", null);
+            activate.EnsureSuccessStatusCode();
+
+            var publicA = await PublicIdForStepAsync(ticketId, baseId + 1);
+            var assign = await PostWithIdempotencyAsync(creator, $"/api/v1/work-items/{publicA}/assign", $"api-{baseId}-assign", new { DepartmentId = 501, TeamId = 601, UserId = 7150, Reason = "api assignment" });
+            assign.EnsureSuccessStatusCode();
+
+            var unauthorized = await PostNoBodyWithIdempotencyAsync(api.ClientFor(7100), $"/api/v1/work-items/{publicA}/complete", $"api-{baseId}-unauthorized");
+            Assert.Equal(HttpStatusCode.Forbidden, unauthorized.StatusCode);
+
+            var invalid = await PostNoBodyWithIdempotencyAsync(creator, "/api/v1/work-items/INVALID/complete", $"api-{baseId}-invalid");
+            Assert.Equal(HttpStatusCode.NotFound, invalid.StatusCode);
+            var missing = await PostNoBodyWithIdempotencyAsync(creator, "/api/v1/work-items/ABCDEFGHJKLMNPQR/complete", $"api-{baseId}-missing");
+            Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+
+            var executor = api.ClientFor(7150);
+            var completeA = await PostNoBodyWithIdempotencyAsync(executor, $"/api/v1/work-items/{publicA}/complete", $"api-{baseId}-complete-a");
+            completeA.EnsureSuccessStatusCode();
+            var retryA = await PostNoBodyWithIdempotencyAsync(executor, $"/api/v1/work-items/{publicA}/complete", $"api-{baseId}-complete-a");
+            retryA.EnsureSuccessStatusCode();
+            Assert.True(await ReadBoolAsync(retryA, "alreadyProcessed"));
+
+            var conflict = await PostWithIdempotencyAsync(creator, $"/api/v1/work-items/{publicA}/assign", $"api-{baseId}-assign", new { DepartmentId = 502, TeamId = 602, UserId = 7200, Reason = "different request" });
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+
+            var publicB = await PublicIdForStepAsync(ticketId, baseId + 2);
+            var raceClients = Enumerable.Range(0, 6).Select(_ => api.ClientFor(7200)).ToArray();
+            var raceTasks = raceClients.Select((client, i) => PostNoBodyWithIdempotencyAsync(client, $"/api/v1/work-items/{publicB}/complete", $"api-{baseId}-race-{i}")).ToArray();
+            var race = await Task.WhenAll(raceTasks);
+            Assert.Equal(1, race.Count(x => x.IsSuccessStatusCode));
+            Assert.All(race.Where(x => !x.IsSuccessStatusCode), x => Assert.Equal(HttpStatusCode.Conflict, x.StatusCode));
+
+            await using var db = CreateExecutionDb();
+            var instance = await db.WorkflowInstances.SingleAsync(x => x.Id == baseId + 500);
+            var ticket = await db.Tickets.SingleAsync(x => x.Id == ticketId);
+            Assert.Equal("COMPLETED", instance.Status);
+            Assert.Equal((int)TicketStatus.Resolved, ticket.StatusId);
+            Assert.Equal(1, await db.Events.CountAsync(x => x.TicketId == ticketId && x.Type == "WORK_ITEM_COMPLETED" && x.WorkItemId != null && x.ActorId == 7200));
+            var workB = await db.WorkItems.SingleAsync(x => x.TicketId == ticketId && x.WorkflowStepId == baseId + 2);
+            Assert.Equal("COMPLETED", workB.Status);
+            Assert.Equal(1, await db.Audits.CountAsync(x => x.EntityType == "WORK_ITEM" && x.EntityId == workB.Id.ToString() && x.Action == "WORK_ITEM_COMPLETED"));
+            Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "WORKFLOW_STEP_COMPLETED"));
+        }
+        finally
+        {
+            await CleanupAsync(tracker);
+        }
+    }
+    [Fact]
+    public async Task Approval_and_sla_http_pipeline_persists_history_and_enforces_authorization()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+
+        var root = FindRepositoryRoot();
+        await using var api = await ApiHost.StartAsync(root);
+        var tracker = new CleanupTracker();
+        var baseId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(901, 1300);
+
+        try
+        {
+            var creator = api.ClientFor(9001);
+            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Change, Subject = $"API approval SLA {Guid.NewGuid():N}", Description = "approval/sla api coverage" });
+            Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
+            var ticketId = await ReadLongAsync(create, "id");
+            tracker.TicketIds.Add(ticketId);
+
+            var selfApproval = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/approval", new { ApproverUserId = 9001 });
+            Assert.Equal(HttpStatusCode.Conflict, selfApproval.StatusCode);
+
+            var approvalOne = baseId + 701;
+            var approvalTwo = baseId + 702;
+            var approvalRejected = baseId + 703;
+            var slaId = baseId + 801;
+            tracker.ApprovalIds.AddRange([approvalOne, approvalTwo, approvalRejected]);
+            tracker.SlaIds.Add(slaId);
+
+            await using (var db = CreateExecutionDb())
+            {
+                db.Approvals.Add(new ApprovalExecutionRow { Id = approvalOne, TicketId = ticketId, Status = "PENDING", ApproverId = 8100 });
+                db.Approvals.Add(new ApprovalExecutionRow { Id = approvalTwo, TicketId = ticketId, Status = "PENDING", ApproverId = 8200 });
+                db.Approvals.Add(new ApprovalExecutionRow { Id = approvalRejected, TicketId = ticketId, Status = "PENDING", ApproverId = 8300 });
+                db.Slas.Add(new SlaExecutionRow { Id = slaId, TicketId = ticketId, Status = "RUNNING" });
+                await db.SaveChangesAsync();
+            }
+
+            var unauthorizedApproval = await PostWithIdempotencyAsync(api.ClientFor(8400), $"/api/v1/approvals/{approvalOne}/decisions", $"api-{baseId}-unauth-approval", new { Decision = DurableApprovalDecision.Approved, Comments = "not authorized" });
+            Assert.Equal(HttpStatusCode.Forbidden, unauthorizedApproval.StatusCode);
+            var unauthorizedDelegation = await PostWithIdempotencyAsync(api.ClientFor(8400), $"/api/v1/approvals/{approvalOne}/delegations", $"api-{baseId}-unauth-delegate", new { OriginalApproverUserId = 8100, DelegateUserId = 8150, EffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(-1), EffectiveTo = DateTimeOffset.UtcNow.AddHours(1), Reason = "unauthorized delegation attempt" });
+            Assert.Equal(HttpStatusCode.Forbidden, unauthorizedDelegation.StatusCode);
+            (await PostWithIdempotencyAsync(api.ClientFor(8100), $"/api/v1/approvals/{approvalOne}/delegations", $"api-{baseId}-delegate", new { OriginalApproverUserId = 8100, DelegateUserId = 8150, EffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(-1), EffectiveTo = DateTimeOffset.UtcNow.AddHours(1), Reason = "delegate api coverage" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(8150), $"/api/v1/approvals/{approvalOne}/decisions", $"api-{baseId}-approve-delegated", new { Decision = DurableApprovalDecision.Approved, Comments = "delegate approved" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(8200), $"/api/v1/approvals/{approvalTwo}/decisions", $"api-{baseId}-approve-second", new { Decision = DurableApprovalDecision.Approved, Comments = "second approval" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(8300), $"/api/v1/approvals/{approvalRejected}/decisions", $"api-{baseId}-reject", new { Decision = DurableApprovalDecision.Rejected, Comments = "rejecting" })).EnsureSuccessStatusCode();
+
+            (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-pause-1", new { Operation = DurableSlaOperation.Pause, Reason = "WAITING_CUSTOMER" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-resume-1", new { Operation = DurableSlaOperation.Resume, Reason = "CUSTOMER_RESPONDED" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-pause-2", new { Operation = DurableSlaOperation.Pause, Reason = "WAITING_VENDOR" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-resume-2", new { Operation = DurableSlaOperation.Resume, Reason = "VENDOR_RESPONDED" })).EnsureSuccessStatusCode();
+            (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-breach", new { Operation = DurableSlaOperation.Breach, Reason = "resolution elapsed" })).EnsureSuccessStatusCode();
+
+            await using (var db = CreateExecutionDb())
+            {
+                Assert.Equal("APPROVED", (await db.Approvals.SingleAsync(x => x.Id == approvalOne)).Status);
+                Assert.Equal("APPROVED", (await db.Approvals.SingleAsync(x => x.Id == approvalTwo)).Status);
+                Assert.Equal("REJECTED", (await db.Approvals.SingleAsync(x => x.Id == approvalRejected)).Status);
+                Assert.True(await db.ApprovalDelegations.AnyAsync(x => x.ApprovalId == approvalOne && x.DelegateUser == 8150));
+                Assert.Equal(3, await db.ApprovalHistory.CountAsync(x => tracker.ApprovalIds.Contains(x.ApprovalId) && x.Action == "DECISION"));
+                Assert.True(await db.Audits.AnyAsync(x => x.EntityType == "APPROVAL" && x.EntityId == approvalOne.ToString() && x.Action == "APPROVAL_DELEGATED"));
+                Assert.True(await db.Audits.AnyAsync(x => x.EntityType == "APPROVAL" && x.EntityId == approvalOne.ToString() && x.PreviousHash != null));
+                var sla = await db.Slas.SingleAsync(x => x.Id == slaId);
+                Assert.Equal("BREACHED", sla.Status);
+                Assert.NotNull(sla.BreachedAt);
+                Assert.Equal(2, await db.SlaPauses.CountAsync(x => x.SlaId == slaId && x.EndedAt != null));
+                Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "SLA_BREACH" && x.Category == "SLA"));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tracker);
+        }
+    }
+
+    [Fact]
+    public async Task Durable_approval_orchestration_http_pipeline_proves_modes_delegation_sod_idempotency_and_concurrency()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await EnsureActiveApprovalUsersAsync(8101, 8102, 8111, 8112, 8121, 8122, 8131, 8141, 8142, 8151, 8161);
+        var root = FindRepositoryRoot();
+        await using var api = await ApiHost.StartAsync(root);
+        var tracker = new CleanupTracker();
+        var baseId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1301, 1700);
+
+        try
+        {
+            var creator = api.ClientFor(9001);
+            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Change, Subject = $"API durable approval {Guid.NewGuid():N}", Description = "durable approval orchestration" });
+            Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
+            var ticketId = await ReadLongAsync(create, "id");
+            tracker.TicketIds.Add(ticketId);
+
+            var workflowStepId = baseId + 1;
+            var workflow = baseId + 10;
+            var version = baseId + 20;
+            var workflowInstance = baseId + 30;
+            tracker.WorkflowIds.Add(workflow);
+            tracker.WorkflowVersionIds.Add(version);
+            tracker.WorkflowInstanceIds.Add(workflowInstance);
+            await using (var db = CreateExecutionDb())
+            {
+                db.WorkflowDefinitions.Add(new WorkflowDefinitionRow { Id = workflow, Code = "APPROVAL" + baseId, Name = "Approval workflow" });
+                db.WorkflowVersions.Add(new WorkflowVersionRow { Id = version, WorkflowId = workflow, VersionNo = 1, Status = "PUBLISHED" });
+                db.WorkflowStepDefinitions.Add(new WorkflowStepDefinitionRow { Id = workflowStepId, VersionId = version, StepNo = 1, Code = "APPROVAL", Name = "Approval", Type = "APPROVAL", ExecutionMode = "ALLREQUIRED" });
+                db.WorkflowInstances.Add(new WorkflowInstanceRow { Id = workflowInstance, TicketId = ticketId, VersionId = version, Status = "RUNNING" });
+                await db.SaveChangesAsync();
+            }
+            long stepInstanceId;
+            await using (var db = CreateExecutionDb())
+            {
+                var step = new WorkflowStepInstanceRow { WorkflowInstanceId = workflowInstance, WorkflowStepId = workflowStepId, Status = "ACTIVE", StartedAt = DateTimeOffset.UtcNow, JoinRule = "ALLREQUIRED" };
+                db.WorkflowSteps.Add(step);
+                await db.SaveChangesAsync();
+                stepInstanceId = step.Id;
+            }
+
+            var anyOne = await CreateApprovalAsync(api, ticketId, stepInstanceId, DurableApprovalMode.AnyOne, [(8101, 1, true), (8102, 1, true)], $"api-{baseId}-any");
+            tracker.ApprovalInstanceIds.Add(anyOne.InstanceId);
+            tracker.ApprovalIds.AddRange(anyOne.ApprovalIds);
+            (await DecideAsync(api, 8101, anyOne.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-any-decide")).EnsureSuccessStatusCode();
+
+            var allRequired = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.AllRequired, [(8111, 1, true), (8112, 1, true)], $"api-{baseId}-all");
+            tracker.ApprovalInstanceIds.Add(allRequired.InstanceId);
+            tracker.ApprovalIds.AddRange(allRequired.ApprovalIds);
+            (await DecideAsync(api, 8111, allRequired.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-all-1")).EnsureSuccessStatusCode();
+            await AssertApprovalStatusAsync(allRequired.InstanceId, "PENDING");
+            (await DecideAsync(api, 8112, allRequired.ApprovalIds[1], DurableApprovalDecision.Approved, $"api-{baseId}-all-2")).EnsureSuccessStatusCode();
+
+            var sequential = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.Sequential, [(8121, 1, true), (8122, 2, true)], $"api-{baseId}-seq");
+            tracker.ApprovalInstanceIds.Add(sequential.InstanceId);
+            tracker.ApprovalIds.AddRange(sequential.ApprovalIds);
+            (await DecideAsync(api, 8121, sequential.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-seq-1")).EnsureSuccessStatusCode();
+            await AssertApprovalPendingAsync(sequential.ApprovalIds[1]);
+            (await DecideAsync(api, 8122, sequential.ApprovalIds[1], DurableApprovalDecision.Approved, $"api-{baseId}-seq-2")).EnsureSuccessStatusCode();
+
+            var rejected = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.AnyOne, [(8131, 1, true)], $"api-{baseId}-reject");
+            tracker.ApprovalInstanceIds.Add(rejected.InstanceId);
+            tracker.ApprovalIds.AddRange(rejected.ApprovalIds);
+            (await DecideAsync(api, 8131, rejected.ApprovalIds[0], DurableApprovalDecision.Rejected, $"api-{baseId}-reject-decide")).EnsureSuccessStatusCode();
+
+            var delegated = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.AnyOne, [(8141, 1, true)], $"api-{baseId}-delegate-create");
+            tracker.ApprovalInstanceIds.Add(delegated.InstanceId);
+            tracker.ApprovalIds.AddRange(delegated.ApprovalIds);
+            (await PostWithIdempotencyAsync(api.ClientFor(8141), $"/api/v1/approvals/{delegated.ApprovalIds[0]}/delegations", $"api-{baseId}-delegate", new { OriginalApproverUserId = 8141, DelegateUserId = 8142, EffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(-1), EffectiveTo = DateTimeOffset.UtcNow.AddHours(1), Reason = "coverage" })).EnsureSuccessStatusCode();
+            (await DecideAsync(api, 8142, delegated.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-delegate-decide")).EnsureSuccessStatusCode();
+
+            var idempotent = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.AnyOne, [(8151, 1, true)], $"api-{baseId}-idem-create");
+            tracker.ApprovalInstanceIds.Add(idempotent.InstanceId);
+            tracker.ApprovalIds.AddRange(idempotent.ApprovalIds);
+            var createRetry = await PostWithIdempotencyAsync(creator, "/api/v1/approvals", $"api-{baseId}-idem-create", new { TicketId = ticketId, Mode = DurableApprovalMode.AnyOne, Approvers = new[] { new { UserId = 8151, Level = 1, Required = true } }, RequesterUserId = 9001 });
+            createRetry.EnsureSuccessStatusCode();
+            Assert.Equal(idempotent.InstanceId, await ReadLongAsync(createRetry, "instanceId"));
+            (await DecideAsync(api, 8151, idempotent.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-idem-decide")).EnsureSuccessStatusCode();
+            var decisionRetry = await DecideAsync(api, 8151, idempotent.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-idem-decide");
+            decisionRetry.EnsureSuccessStatusCode();
+            Assert.True(await ReadBoolAsync(decisionRetry, "alreadyProcessed"));
+
+            var sod = await PostWithIdempotencyAsync(creator, "/api/v1/approvals", $"api-{baseId}-sod", new { TicketId = ticketId, Mode = DurableApprovalMode.AnyOne, Approvers = new[] { new { UserId = 9001, Level = 1, Required = true } }, RequesterUserId = 9001 });
+            Assert.Equal(HttpStatusCode.Conflict, sod.StatusCode);
+
+            var concurrent = await CreateApprovalAsync(api, ticketId, null, DurableApprovalMode.AnyOne, [(8161, 1, true)], $"api-{baseId}-race-create");
+            tracker.ApprovalInstanceIds.Add(concurrent.InstanceId);
+            tracker.ApprovalIds.AddRange(concurrent.ApprovalIds);
+            var race = await Task.WhenAll(
+                DecideAsync(api, 8161, concurrent.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-race-1"),
+                DecideAsync(api, 8161, concurrent.ApprovalIds[0], DurableApprovalDecision.Approved, $"api-{baseId}-race-2"));
+            Assert.Equal(1, race.Count(x => x.IsSuccessStatusCode));
+            Assert.Equal(1, race.Count(x => x.StatusCode == HttpStatusCode.Conflict));
+
+            await using (var db = CreateExecutionDb())
+            {
+                Assert.Equal("APPROVED", (await db.ApprovalInstances.SingleAsync(x => x.Id == anyOne.InstanceId)).Status);
+                Assert.Equal("COMPLETED", (await db.WorkflowSteps.SingleAsync(x => x.Id == stepInstanceId)).Status);
+                Assert.Equal("APPROVED", (await db.ApprovalInstances.SingleAsync(x => x.Id == allRequired.InstanceId)).Status);
+                Assert.Equal("APPROVED", (await db.ApprovalInstances.SingleAsync(x => x.Id == sequential.InstanceId)).Status);
+                Assert.Equal("REJECTED", (await db.ApprovalInstances.SingleAsync(x => x.Id == rejected.InstanceId)).Status);
+                Assert.Equal("APPROVED", (await db.ApprovalInstances.SingleAsync(x => x.Id == delegated.InstanceId)).Status);
+                Assert.Equal("APPROVED", (await db.ApprovalInstances.SingleAsync(x => x.Id == concurrent.InstanceId)).Status);
+                Assert.True(await db.ApprovalDelegations.AnyAsync(x => x.ApprovalId == delegated.ApprovalIds[0] && x.DelegateUser == 8142));
+                Assert.True(await db.ApprovalHistory.AnyAsync(x => x.ApprovalId == sequential.ApprovalIds[1] && x.Action == "ACTIVATED"));
+                Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "APPROVAL_INSTANCE_APPROVED"));
+                Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "WORKFLOW_STEP_COMPLETED"));
+                var audits = await db.Audits.Where(x => x.EntityType == "APPROVAL_INSTANCE" && x.EntityId == anyOne.InstanceId.ToString()).OrderBy(x => x.Id).ToListAsync();
+                Assert.True(audits.Count >= 2);
+                Assert.All(audits.Skip(1), audit => Assert.Equal(audits[audits.IndexOf(audit) - 1].Hash, audit.PreviousHash));
+            }
+        }
+        finally
+        {
+            await CleanupAsync(tracker);
+        }
+    }
+
+    private static async Task<(long InstanceId, List<long> ApprovalIds)> CreateApprovalAsync(ApiHost api, long ticketId, long? workflowStepInstanceId, DurableApprovalMode mode, (long UserId, int Level, bool Required)[] approvers, string key)
+    {
+        var response = await PostWithIdempotencyAsync(api.ClientFor(9001), "/api/v1/approvals", key, new { TicketId = ticketId, WorkflowStepInstanceId = workflowStepInstanceId, Mode = mode, Approvers = approvers.Select(x => new { x.UserId, x.Level, x.Required }).ToArray(), RequesterUserId = 9001 });
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var json = await JsonDocument.ParseAsync(stream);
+        return (json.RootElement.GetProperty("instanceId").GetInt64(), json.RootElement.GetProperty("approvalIds").EnumerateArray().Select(x => x.GetInt64()).ToList());
+    }
+
+    private static Task<HttpResponseMessage> DecideAsync(ApiHost api, long actor, long approvalId, DurableApprovalDecision decision, string key) => PostWithIdempotencyAsync(api.ClientFor(actor), $"/api/v1/approvals/{approvalId}/decisions", key, new { Decision = decision, Comments = "api durable decision" });
+
+    private static async Task AssertApprovalStatusAsync(long instanceId, string status)
+    {
+        await using var db = CreateExecutionDb();
+        Assert.Equal(status, (await db.ApprovalInstances.SingleAsync(x => x.Id == instanceId)).Status);
+    }
+
+    private static async Task AssertApprovalPendingAsync(long approvalId)
+    {
+        await using var db = CreateExecutionDb();
+        Assert.Equal("PENDING", (await db.Approvals.SingleAsync(x => x.Id == approvalId)).Status);
+    }
+    private static async Task<HttpResponseMessage> PostNoBodyWithIdempotencyAsync(HttpClient client, string url, string key)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        request.Headers.Add("Idempotency-Key", key);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<HttpResponseMessage> PostWithIdempotencyAsync(HttpClient client, string url, string key, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = JsonContent.Create(body) };
+        request.Headers.Add("Idempotency-Key", key);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<long> ReadLongAsync(HttpResponseMessage response, string property)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var json = await JsonDocument.ParseAsync(stream);
+        return json.RootElement.GetProperty(property).GetInt64();
+    }
+
+    private static async Task<bool> ReadBoolAsync(HttpResponseMessage response, string property)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var json = await JsonDocument.ParseAsync(stream);
+        return json.RootElement.GetProperty(property).GetBoolean();
+    }
+
+    private static async Task<string> PublicIdForStepAsync(long ticketId, long stepId)
+    {
+        await using var db = CreateExecutionDb();
+        return await db.WorkItems.Where(x => x.TicketId == ticketId && x.WorkflowStepId == stepId).Select(x => x.PublicId).SingleAsync();
+    }
+
+    private static async Task SeedWorkflowAsync(long baseId, long ticketId, CleanupTracker tracker, bool hasDownstream)
+    {
+        await using var db = CreateExecutionDb();
+        var workflowId = baseId + 100;
+        var versionId = baseId + 200;
+        var instanceId = baseId + 500;
+        tracker.WorkflowIds.Add(workflowId);
+        tracker.WorkflowVersionIds.Add(versionId);
+        tracker.WorkflowInstanceIds.Add(instanceId);
+        db.WorkflowDefinitions.Add(new WorkflowDefinitionRow { Id = workflowId, Code = "API" + baseId, Name = "API workflow" });
+        db.WorkflowVersions.Add(new WorkflowVersionRow { Id = versionId, WorkflowId = workflowId, VersionNo = 1, Status = "PUBLISHED" });
+        db.WorkflowStepDefinitions.Add(new WorkflowStepDefinitionRow { Id = baseId + 1, VersionId = versionId, StepNo = 1, Code = "A", Name = "A", Type = "WORK", ExecutionMode = "ALLREQUIRED" });
+        db.WorkflowStepDefinitions.Add(new WorkflowStepDefinitionRow { Id = baseId + 2, VersionId = versionId, StepNo = 2, Code = "B", Name = "B", Type = "WORK", ExecutionMode = "ALLREQUIRED" });
+        if (hasDownstream) db.WorkflowTransitions.Add(new WorkflowTransitionRow { Id = baseId + 301, VersionId = versionId, FromStepId = baseId + 1, ToStepId = baseId + 2, Code = "A-B" });
+        db.WorkflowInstances.Add(new WorkflowInstanceRow { Id = instanceId, TicketId = ticketId, VersionId = versionId, Status = "RUNNING" });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Export_and_schedule_http_contracts_persist_and_enforce_owner()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot(), requireReady: false);
+        using var owner = api.ClientFor(9001);
+        using var other = api.ClientFor(9998);
+        long? exportId = null;
+        long? scheduleId = null;
+        try
+        {
+            using var exportResponse = await owner.PostAsJsonAsync("/api/v1/reports/ticket-status-summary/exports", new { Format = 0, Filters = new { Page = 1, PageSize = 25 }, MaxRows = 10000 });
+            Assert.True(exportResponse.StatusCode == HttpStatusCode.Accepted, await exportResponse.Content.ReadAsStringAsync());
+            using (var exportJson = JsonDocument.Parse(await exportResponse.Content.ReadAsStringAsync()))
+            {
+                exportId = exportJson.RootElement.GetProperty("id").GetInt64();
+                Assert.Equal("COMPLETED", exportJson.RootElement.GetProperty("status").GetString());
+            }
+            Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync($"/api/v1/exports/{exportId}")).StatusCode);
+            using var download = await owner.GetAsync($"/api/v1/exports/{exportId}/download");
+            Assert.Equal(HttpStatusCode.OK, download.StatusCode);
+            Assert.Equal("text/csv", download.Content.Headers.ContentType?.MediaType);
+            Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/v1/exports/{exportId}")).StatusCode);
+
+            using var scheduleResponse = await owner.PostAsJsonAsync("/api/v1/report-schedules", new { ReportCode = "ticket-status-summary", Format = 0, Filters = new { Page = 1, PageSize = 25 }, Recurrence = new { Frequency = 0, LocalHour = 3, LocalMinute = 0 }, TimeZone = "Asia/Kolkata" });
+            Assert.True(scheduleResponse.StatusCode == HttpStatusCode.OK, await scheduleResponse.Content.ReadAsStringAsync());
+            using (var scheduleJson = JsonDocument.Parse(await scheduleResponse.Content.ReadAsStringAsync())) scheduleId = scheduleJson.RootElement.GetProperty("id").GetInt64();
+            Assert.Equal(HttpStatusCode.OK, (await owner.GetAsync("/api/v1/report-schedules")).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/v1/report-schedules/{scheduleId}")).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsync($"/api/v1/report-schedules/{scheduleId}/pause", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsync($"/api/v1/report-schedules/{scheduleId}/resume", null)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await owner.PostAsync($"/api/v1/report-schedules/{scheduleId}/cancel", null)).StatusCode);
+        }
+        finally
+        {
+            await using var db = CreateExecutionDb();
+            if (scheduleId is not null)
+            {
+                await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_REPORT_SCHEDULE_EXECUTION\" where \"N_SCHEDULE_ID\" = {scheduleId}");
+                await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_REPORT_SCHEDULE\" where \"N_SCHEDULE_ID\" = {scheduleId}");
+            }
+            if (exportId is not null) await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_REPORT_EXPORT\" where \"N_EXPORT_ID\" = {exportId}");
+        }
+    }
+    private static TicketsDbContext CreateTicketsDb()
+    {
+        var options = new DbContextOptionsBuilder<TicketsDbContext>().UseNpgsql(Environment.GetEnvironmentVariable("PA_TICKETS_TEST_CONNECTION_STRING")).Options;
+        return new TicketsDbContext(options);
+    }
+
+    private static string ComputeAuditHash(string entityType, string entityId, string action, long actorId, DateTimeOffset at, string? oldValue, string? newValue, string? reason, string? previousHash)
+    {
+        var canonical = JsonSerializer.Serialize(new
+        {
+            entityType,
+            entityId,
+            action,
+            actorUserId = actorId,
+            auditAtUtc = at.UtcDateTime,
+            oldValue,
+            newValue,
+            reason,
+            previousHash
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static async Task EnsureWorkflowAssigneeScopesAsync()
+    {
+        await using var db = CreateTicketsDb();
+        foreach (var id in new[] { 502L, 503L, 504L })
+        {
+            if (!await db.AdministrationDepartments.AnyAsync(x => x.Id == id))
+                db.AdministrationDepartments.Add(new AdministrationDepartmentRow { Id = id, Code = $"TEST-DEPT-{id}", Name = $"Test Department {id}", Active = true, CreatedAt = DateTimeOffset.UtcNow, CreatedBy = 0 });
+        }
+        await db.SaveChangesAsync();
+        foreach (var (teamId, departmentId) in new[] { (602L, 502L), (603L, 503L), (604L, 504L) })
+        {
+            if (!await db.AdministrationTeams.AnyAsync(x => x.Id == teamId))
+                db.AdministrationTeams.Add(new AdministrationTeamRow { Id = teamId, DepartmentId = departmentId, Code = $"TEST-TEAM-{teamId}", Name = $"Test Team {teamId}", Active = true, CreatedAt = DateTimeOffset.UtcNow, CreatedBy = 0 });
+        }
+        await db.SaveChangesAsync();
+        foreach (var (userId, departmentId, teamId) in new[]
+        {
+            (7200L, 502L, 602L),
+            (7300L, 503L, 603L),
+            (7400L, 504L, 604L)
+        })
+        {
+            var user = await db.AdministrationUsers.SingleAsync(x => x.Id == userId);
+            user.DepartmentId = departmentId;
+            user.TeamId = teamId;
+        }
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task EnsureActiveApprovalUsersAsync(params long[] userIds)
+    {
+        await using var db = CreateTicketsDb();
+        foreach (var userId in userIds)
+        {
+            var user = await db.AdministrationUsers.SingleOrDefaultAsync(x => x.Id == userId);
+            if (user is null)
+            {
+                db.AdministrationUsers.Add(new AdministrationUserRow
+                {
+                    Id = userId,
+                    UserCode = $"TEST-APPROVAL-{userId}",
+                    LoginName = $"test-approval-{userId}",
+                    DisplayName = $"Test Approval User {userId}",
+                    DepartmentId = 501,
+                    TeamId = 601,
+                    Active = true,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    CreatedBy = 0
+                });
+            }
+            else
+            {
+                user.DepartmentId = 501;
+                user.TeamId = 601;
+                user.Active = true;
+            }
+        }
+        await db.SaveChangesAsync();
+    }
+    private static ExecutionDbContext CreateExecutionDb()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Database:Provider"] = "PostgreSQL" }).Build();
+        var options = new DbContextOptionsBuilder<ExecutionDbContext>().UseNpgsql(Environment.GetEnvironmentVariable("PA_TICKETS_TEST_CONNECTION_STRING")).Options;
+        return new ExecutionDbContext(options);
+    }
+
+    private static async Task CleanupAsync(CleanupTracker tracker)
+    {
+        await using var db = CreateExecutionDb();
+        foreach (var slaId in tracker.SlaIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_SLA_PAUSE"" where ""N_SLA_ID"" = {slaId}");
+        foreach (var slaId in tracker.SlaIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_SLA"" where ""N_SLA_ID"" = {slaId}");
+        foreach (var approvalId in tracker.ApprovalIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL_DELEGATION"" where ""N_APPROVAL_ID"" = {approvalId}");
+        foreach (var approvalId in tracker.ApprovalIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL_HISTORY"" where ""N_APPROVAL_ID"" = {approvalId}");
+        foreach (var approvalId in tracker.ApprovalIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL"" where ""N_APPROVAL_ID"" = {approvalId}");
+        foreach (var instanceId in tracker.ApprovalInstanceIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_APPROVAL_INSTANCE"" where ""N_APPROVAL_INSTANCE_ID"" = {instanceId}");
+        foreach (var instanceId in tracker.WorkflowInstanceIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP_INSTANCE_HISTORY"" where ""N_STEP_INSTANCE_ID"" in (select ""N_STEP_INSTANCE_ID"" from ""PA_TICKETS_WORKFLOW_STEP_INSTANCE"" where ""N_WORKFLOW_INSTANCE_ID"" = {instanceId})");
+        foreach (var ticketId in tracker.TicketIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_TICKET_ID"" = {ticketId}");
+        foreach (var ticketId in tracker.TicketIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {ticketId}");
+        foreach (var ticketId in tracker.TicketIds) await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
+        foreach (var ticketId in tracker.TicketIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORK_ITEM"" where ""N_TICKET_ID"" = {ticketId}");
+        foreach (var instanceId in tracker.WorkflowInstanceIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP_INSTANCE"" where ""N_WORKFLOW_INSTANCE_ID"" = {instanceId}");
+        foreach (var instanceId in tracker.WorkflowInstanceIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_INSTANCE"" where ""N_WORKFLOW_INSTANCE_ID"" = {instanceId}");
+        foreach (var versionId in tracker.WorkflowVersionIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_TRANSITION"" where ""N_WORKFLOW_VERSION_ID"" = {versionId}");
+        foreach (var versionId in tracker.WorkflowVersionIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_STEP"" where ""N_WORKFLOW_VERSION_ID"" = {versionId}");
+        foreach (var versionId in tracker.WorkflowVersionIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW_VERSION"" where ""N_WORKFLOW_VERSION_ID"" = {versionId}");
+        foreach (var workflowId in tracker.WorkflowIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORKFLOW"" where ""N_WORKFLOW_ID"" = {workflowId}");
+        await db.Database.ExecuteSqlRawAsync("delete from \"PA_TICKETS_IDEMPOTENCY\" where \"S_IDEMPOTENCY_KEY\" like 'api-%'");
+        foreach (var ticketId in tracker.TicketIds) await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "PA.Tickets.sln"))) directory = directory.Parent;
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Could not locate PA.Tickets.sln.");
+    }
+
+    private static Task<HttpResponseMessage> GetWithBearerAsync(HttpClient client, string token)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/tickets");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return client.SendAsync(request);
+    }
+
+    private static string CreateJwt(
+        string? subject,
+        string issuer,
+        string audience,
+        string signingKey,
+        DateTime? notBefore = null,
+        DateTime? expires = null)
+    {
+        var claims = subject is null ? [] : new[] { new Claim("sub", subject) };
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var token = new JwtSecurityToken(
+            issuer,
+            audience,
+            claims,
+            notBefore ?? DateTime.UtcNow.AddSeconds(-5),
+            expires ?? DateTime.UtcNow.AddMinutes(5),
+            credentials);
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    private sealed class CleanupTracker
+    {
+        public List<long> TicketIds { get; } = [];
+        public List<long> WorkflowIds { get; } = [];
+        public List<long> WorkflowVersionIds { get; } = [];
+        public List<long> WorkflowInstanceIds { get; } = [];
+        public List<long> ApprovalIds { get; } = [];
+        public List<long> ApprovalInstanceIds { get; } = [];
+        public List<long> SlaIds { get; } = [];
+    }
+
+    private sealed class ApiHost : IAsyncDisposable
+    {
+        private readonly Process _process;
+        private readonly string _baseUrl;
+        public string BaseUrl => _baseUrl;
+        private ApiHost(Process process, string baseUrl) { _process = process; _baseUrl = baseUrl; }
+
+        public static async Task<ApiHost> StartAsync(string root, bool useJwt = false, bool requireReady = true)
+        {
+            var port = Random.Shared.Next(23000, 28000);
+            var url = $"http://127.0.0.1:{port}";
+            var start = new ProcessStartInfo("dotnet", $"run --project \"{Path.Combine(root, "src", "PA.Tickets.Api", "PA.Tickets.Api.csproj")}\" --no-build --no-launch-profile --urls {url}")
+            {
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            start.Environment["ASPNETCORE_ENVIRONMENT"] = "Testing";
+            start.Environment["ASPNETCORE_URLS"] = url;
+            start.Environment["Database__Provider"] = "PostgreSQL";
+            start.Environment["ConnectionStrings__TicketsPostgres"] = Environment.GetEnvironmentVariable("PA_TICKETS_TEST_CONNECTION_STRING") ?? "";
+            if (useJwt)
+            {
+                start.Environment["Auth__TestSigningKey"] = JwtTestSigningKey;
+                start.Environment["Auth__Issuer"] = JwtTestIssuer;
+                start.Environment["Auth__Audience"] = JwtTestAudience;
+            }
+            start.Environment["Security__AssignmentActors__0"] = "9001";
+            start.Environment["Security__AssignmentActors__1"] = "7150";
+            start.Environment["Security__AssignmentActors__2"] = "7200";
+            start.Environment["Security__AllowedAssignmentDepartments__0"] = "501";
+            start.Environment["Security__AllowedAssignmentDepartments__1"] = "502";
+            start.Environment["Security__AllowedAssignmentTeams__0"] = "601";
+            start.Environment["Security__AllowedAssignmentTeams__1"] = "602";
+            start.Environment["WorkflowRouting__Rules__0__RuleCode"] = "API_A";
+            start.Environment["WorkflowRouting__Rules__0__StepCode"] = "A";
+            start.Environment["WorkflowRouting__Rules__0__DepartmentId"] = "501";
+            start.Environment["WorkflowRouting__Rules__0__TeamId"] = "601";
+            start.Environment["WorkflowRouting__Rules__0__UserId"] = "7150";
+            start.Environment["WorkflowRouting__Rules__1__RuleCode"] = "API_B";
+            start.Environment["WorkflowRouting__Rules__1__StepCode"] = "B";
+            start.Environment["WorkflowRouting__Rules__1__DepartmentId"] = "502";
+            start.Environment["WorkflowRouting__Rules__1__TeamId"] = "602";
+            start.Environment["WorkflowRouting__Rules__1__UserId"] = "7200";
+            var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start API process.");
+            var host = new ApiHost(process, url);
+            using var client = new HttpClient { BaseAddress = new Uri(url) };
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            while (!timeout.IsCancellationRequested)
+            {
+                if (process.HasExited) throw new InvalidOperationException($"API host exited: {process.StandardError.ReadToEnd()}");
+                try { if ((await client.GetAsync(requireReady ? "/health" : "/health/live", timeout.Token)).IsSuccessStatusCode) return host; }
+                catch { await Task.Delay(250, timeout.Token); }
+            }
+            throw new TimeoutException("API host did not become healthy.");
+        }
+
+        public HttpClient ClientFor(long userId)
+        {
+            var client = new HttpClient { BaseAddress = new Uri(_baseUrl) };
+            client.DefaultRequestHeaders.Add("X-Test-User", userId.ToString());
+            return client;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try { if (!_process.HasExited) _process.Kill(entireProcessTree: true); }
+            catch { }
+            await Task.CompletedTask;
+            _process.Dispose();
+        }
+    }
+}
+
+

@@ -1,0 +1,5 @@
+﻿namespace PA.Tickets.Domain.Sla;
+public sealed record SlaPolicyVersion(long PolicyId, string Code, int VersionNo, DateTimeOffset EffectiveFrom, DateTimeOffset? EffectiveTo, int? ResponseTargetMinutes, int? ResolutionTargetMinutes, string CalendarCode, string? WaitingRules, string? PauseRules, string? EscalationRules, string? BreachRules, string? NotificationRules, long? ServiceId = null, long? RequestTypeId = null, long? PriorityId = null, long? ClientId = null, long? DepartmentId = null, long? TeamId = null, int? TicketType = null, long? CategoryId = null, long? SubCategoryId = null);
+public sealed record SlaEvaluationContext(long? ServiceId, long? CategoryId, long? RequestTypeId, int? TicketType, long? PriorityId, long? DepartmentId, long? TeamId, long? ClientId, long? SubCategoryId = null);
+public sealed record SlaClockState(DateTimeOffset StartedAt,int ActiveMinutes,int WaitingMinutes,bool Paused,bool Breached);
+public static class SlaDuration { public static int ResolutionMinutes(SlaClockState state)=>state.ActiveMinutes+state.WaitingMinutes; }

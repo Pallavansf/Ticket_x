@@ -1,0 +1,11 @@
+﻿<div class="shell">
+  <header class="shell__header">
+    <a class="brand" routerLink="/app">PA TICKETS</a>
+    <div class="shell__account"><span>{{ auth.session()?.displayName ?? auth.session()?.subject ?? 'Signed-in user' }}</span><button type="button" (click)="logout()">Sign out</button></div>
+  </header>
+  <div class="shell__body">
+    <nav aria-label="Primary navigation"><a routerLink="/app" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Home</a><a routerLink="/app/tickets" routerLinkActive="active">Tickets</a><span class="future-link">Reports (later phase)</span></nav>
+    <main class="shell__main"><router-outlet /></main>
+  </div>
+</div>
+

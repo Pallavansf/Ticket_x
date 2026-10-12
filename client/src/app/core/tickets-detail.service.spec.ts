@@ -1,0 +1,5 @@
+﻿import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
+import { TicketsApiService } from './tickets-api.service';
+describe('TicketsApiService detail', () => { let service: TicketsApiService; let http: HttpTestingController; beforeEach(() => { TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] }); service = TestBed.inject(TicketsApiService); http = TestBed.inject(HttpTestingController); }); afterEach(() => http.verify()); it('gets a ticket by its public numeric identifier', () => { service.get(42).subscribe(); const request = http.expectOne(value => value.url.endsWith('/api/v1/tickets/42')); expect(request.request.method).toBe('GET'); request.flush({ id: 42, number: 'INC-42', type: 0, status: 3, subject: 'Printer', priorityId: null, currentDepartmentId: null, currentTeamId: null, currentAssignee: null, workItems: [] }); }); });

@@ -1,0 +1,4 @@
+﻿-- PA TICKETS additive migration 008: prevent duplicate workflow joins under concurrent workers
+CREATE UNIQUE INDEX UK_PA_TICKETS_WF_STEP_INSTANCE_JOIN
+    ON PA_TICKETS_WORKFLOW_STEP_INSTANCE (N_WORKFLOW_INSTANCE_ID, N_WORKFLOW_STEP_ID);
+COMMIT;

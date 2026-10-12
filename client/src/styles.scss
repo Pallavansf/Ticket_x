@@ -1,0 +1,102 @@
+﻿:root {
+  --brand-50: #f4f7ff;
+  --brand-100: #eaf0ff;
+  --brand-200: #dfe7ff;
+  --brand-500: #5167f5;
+  --brand-600: #425ae0;
+  --brand-700: #2f49c6;
+  --brand-900: #152b52;
+  --surface-0: #f5f7fb;
+  --surface-1: #ffffff;
+  --surface-2: #eef3ff;
+  --ink-900: #1a2339;
+  --ink-700: #49566d;
+  --ink-500: #66758d;
+  --line: #dfe6f2;
+  --success: #0e9074;
+  --warning: #b76d18;
+  --danger: #b33a3a;
+  --shadow-soft: 0 18px 40px rgba(17, 24, 39, 0.08);
+  --shadow-card: 0 10px 24px rgba(17, 24, 39, 0.06);
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  color-scheme: light;
+  font-family: 'Segoe UI', Inter, 'Helvetica Neue', Arial, sans-serif;
+  color: var(--ink-900);
+  background: var(--surface-0);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(80, 103, 245, 0.08), transparent 28%),
+    linear-gradient(180deg, #f8faff 0%, var(--surface-0) 100%);
+  color: var(--ink-900);
+}
+
+a { color: inherit; }
+button, input, select, textarea {
+  font: inherit;
+}
+button {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 3px solid rgba(81, 103, 245, 0.28);
+  outline-offset: 2px;
+}
+
+.status-panel {
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow-card);
+}
+.status-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+.status-panel p {
+  margin: 0;
+  color: var(--ink-700);
+  line-height: 1.6;
+}
+.status-panel--error {
+  border-color: rgba(179, 58, 58, 0.28);
+  background: rgba(255, 245, 245, 0.9);
+}
+.status-panel--error h2 {
+  color: var(--danger);
+}
+.status-panel--empty {
+  border-style: dashed;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(244, 247, 255, 0.8));
+}
+.status-panel a {
+  color: var(--brand-700);
+  font-weight: 600;
+}
+.status-panel > * + * {
+  margin-top: 0.85rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
