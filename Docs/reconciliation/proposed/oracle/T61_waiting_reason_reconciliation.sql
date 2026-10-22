@@ -1,0 +1,47 @@
+-- PA_TICKETS Gate T61.1 REVIEW-ONLY PROPOSAL; DO NOT EXECUTE.
+--
+-- Source discrepancy: the Oracle baseline database/schema/001_PA_TICKETS_SCHEMA.sql
+-- and ordered migration 004 do not define PA_TICKETS_WAITING_REASON or its
+-- sequence, while PersistentWaitingReasonCatalog.cs:14-22 and
+-- TicketsDbContext.cs:20 require the table and all nine mapped fields.
+--
+-- Source-supported table requirements:
+--   * EF key convention requires a primary key for N_WAITING_REASON_ID
+--     (TicketsDbContext.cs:20).
+--   * The nine mapped properties and their CLR nullability are listed below.
+--   * PersistentWaitingReasonCatalog resolves one active/effective row by
+--     code/time (PersistentWaitingReasonCatalog.cs:14-22).
+--
+-- Owner/provider decisions required before any Oracle DDL:
+--   * canonical owner and migration number;
+--   * whether numeric flags use NUMBER(1), including any defaults or checks;
+--   * identifier allocation. EF does not configure a default or sequence for
+--     WaitingReasonRow.Id, and no production write path was found. A sequence
+--     is therefore not a source-verified requirement;
+--   * uniqueness/overlap policy for effective code ranges and any index;
+--   * historical reference-data/backfill policy;
+--   * Oracle 19c transaction/rollback and deployment preflight evidence.
+--
+-- This design sketch is intentionally commented and non-executable. Oracle
+-- DDL auto-commit behavior, existing-object definition checks, and rollback
+-- must be validated by the database owner before an implementation script is
+-- authored.
+--
+-- CREATE TABLE PA_TICKETS_WAITING_REASON (
+--   N_WAITING_REASON_ID NUMBER(18) NOT NULL,
+--   S_REASON_CODE VARCHAR2(100 CHAR) NOT NULL,
+--   N_ACTIVE NUMBER(1) NOT NULL,
+--   D_EFFECTIVE_FROM TIMESTAMP WITH TIME ZONE NOT NULL,
+--   D_EFFECTIVE_TO TIMESTAMP WITH TIME ZONE,
+--   N_PAUSE_SLA NUMBER(1) NOT NULL,
+--   N_REQUIRE_COMMENT NUMBER(1) NOT NULL,
+--   N_REQUIRE_EVIDENCE NUMBER(1) NOT NULL,
+--   N_REQUIRE_EXPECTED_DATE NUMBER(1) NOT NULL,
+--   S_ALLOWED_FROM_STATUSES VARCHAR2(200 CHAR) NOT NULL,
+--   CONSTRAINT PK_PA_TICKETS_WAITING_REASON PRIMARY KEY (N_WAITING_REASON_ID)
+-- );
+--
+-- Defaults, numeric flag checks, sequence/default key generation, unique or
+-- overlap constraints, indexes, foreign keys, reference data, and deployment
+-- ownership remain unresolved. Do not infer that the object exists in a live
+-- Oracle schema from this review-only proposal.

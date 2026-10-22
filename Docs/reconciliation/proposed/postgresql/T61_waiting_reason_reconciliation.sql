@@ -1,0 +1,17 @@
+-- PA_TICKETS Gate T61.1 REVIEW-ONLY RECONCILIATION; DO NOT EXECUTE.
+--
+-- Resolution: no PostgreSQL correction is proposed. Both reviewed scripts
+-- already contain the mapped field with the source-supported definition:
+--   tests/scripts/postgresql-schema.sql:61-72
+--   tests/scripts/postgresql-foundational-ddl.sql:74-85
+--   "N_REQUIRE_EXPECTED_DATE" boolean NOT NULL DEFAULT false
+--
+-- The CLR property is bool and non-nullable (PersistentWaitingReasonCatalog.cs:36),
+-- and EF maps it to that column (TicketsDbContext.cs:20). The application reads
+-- it when constructing WaitingReasonDefinition (PersistentWaitingReasonCatalog.cs:22)
+-- and provider-backed tests seed/read true and false values. No production write
+-- path or alternate column name was found.
+--
+-- No ALTER TABLE, backfill, constraint, or index is justified by source evidence.
+-- A future provider check may compare existing metadata, but this file must not
+-- be treated as proof of live schema state or as an execution artifact.

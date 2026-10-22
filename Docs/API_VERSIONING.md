@@ -8,7 +8,7 @@ Swagger exposes the `v1` document at `/swagger/v1/swagger.json` and lists the `/
 
 ## Compatibility decisions
 
-- Authentication remains the existing JWT bearer middleware. No login or token issuance controller exists in this API; any future authentication endpoints must be introduced under `/api/v1`.
+- Regular username/password login is exposed as `POST /api/v1/auth/login`; it returns a short-lived bearer token. Password setting/reset is `POST /api/v1/admin/users/{id}/password` and requires `USER_ADMIN`. Optional OIDC bearer validation remains supported as an add-on; it is not required for local acceptance.
 - No public signed-file endpoint exists. Attachment and evidence routes remain authenticated `/api/v1` business routes.
 - `/health`, `/health/live`, and `/health/ready` remain infrastructure endpoints and are intentionally outside API versioning.
 - The Angular ticket client already calls `/api/v1/tickets`; no client route migration was required.

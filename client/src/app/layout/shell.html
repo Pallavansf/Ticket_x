@@ -1,11 +1,10 @@
-﻿<div class="shell">
+<div class="shell">
   <header class="shell__header">
     <a class="brand" routerLink="/app">PA TICKETS</a>
     <div class="shell__account"><span>{{ auth.session()?.displayName ?? auth.session()?.subject ?? 'Signed-in user' }}</span><button type="button" (click)="logout()">Sign out</button></div>
   </header>
   <div class="shell__body">
-    <nav aria-label="Primary navigation"><a routerLink="/app" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Home</a><a routerLink="/app/tickets" routerLinkActive="active">Tickets</a><span class="future-link">Reports (later phase)</span></nav>
+    <nav aria-label="Primary navigation"><a routerLink="/app" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Home</a>@if (auth.hasPermission('TICKET_READ')) { <a routerLink="/app/tickets" routerLinkActive="active">Tickets</a> }@if (auth.hasPermission('USER_ADMIN')) { <a routerLink="/app/admin/users" routerLinkActive="active">Users</a> }@if (auth.hasPermission('ROLE_PERMISSION_ADMIN')) { <a routerLink="/app/admin/roles" routerLinkActive="active">Roles and permissions</a> }@if (auth.hasPermission('AUDIT_EXPORT') || auth.hasPermission('AUDITOR_VIEW')) { <span class="future-link">Reports (later phase)</span> }</nav>
     <main class="shell__main"><router-outlet /></main>
   </div>
 </div>
-

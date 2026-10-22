@@ -6,6 +6,14 @@ public sealed record CreateAttachmentCommand(long TicketId,long? WorkItemId,stri
 public sealed record AttachmentResult(Attachment Attachment,AttachmentVersion Version);
 public sealed record CreateEvidenceCommand(long TicketId,long? WorkItemId,long? AttachmentId,string Code,string Type,string? Description,string? ControlReference,DateTimeOffset? ReviewDueAt,DateTimeOffset? RetentionUntil,string IdempotencyKey,string? CorrelationId);
 public sealed record ReviewEvidenceCommand(string Status,string? Comment);
+public sealed record AttachmentDownloadOwnerFact(long AttachmentId,long TicketId,Ticket ParentTicket);
+public sealed record AttachmentDownloadVersionFact(long Id,long AttachmentId,int VersionNo,string FileName,string? ContentType,long ContentLength,string StorageProvider,string StorageReference,string Sha256Hash,string Status,string? ChangeReason,DateTimeOffset UploadedAt,long UploadedBy);
+
+public interface IAttachmentDownloadReader
+{
+    Task<AttachmentDownloadOwnerFact> ReadOwnerAsync(long attachmentId,CancellationToken ct);
+    Task<AttachmentDownloadVersionFact> ReadVersionAsync(long attachmentId,int version,CancellationToken ct);
+}
 
 public interface IAttachmentService
 {

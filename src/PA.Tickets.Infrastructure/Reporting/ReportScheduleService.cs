@@ -1,15 +1,17 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using PA.Tickets.Application.Foundations;
 using PA.Tickets.Application.Reporting;
 using PA.Tickets.Infrastructure.Execution;
 
 namespace PA.Tickets.Infrastructure.Reporting;
 
-public sealed class ReportScheduleService(ExecutionDbContext db, IReportingQueryService reports, TimeProvider clock) : IReportScheduleService
+public sealed class ReportScheduleService(ExecutionDbContext db, IReportingQueryService reports, IAuthorizationService authorization, TimeProvider clock) : IReportScheduleService
 {
     public async Task<ReportSchedule> CreateAsync(long ownerUserId, string reportCode, ReportExportFormat format, ReportQueryRequest filters, ReportScheduleRecurrence recurrence, string timeZone, CancellationToken ct)
     {
-        reports.GetDefinition(reportCode);
+        var definition = reports.GetDefinition(reportCode);
+        await authorization.EnsurePermissionAsync(ownerUserId, definition.Permission, null, ct);
         recurrence.Validate();
         var zone = TimeZoneInfo.FindSystemTimeZoneById(timeZone);
         var now = clock.GetUtcNow();

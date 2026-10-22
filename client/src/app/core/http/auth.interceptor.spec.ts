@@ -26,6 +26,23 @@ describe('authInterceptor', () => {
     request.flush({ items: [] });
   });
 
+  it('attaches the token returned by login to subsequent protected requests', () => {
+    auth.logout();
+    const accessToken = `${btoa('{}')}.${btoa(JSON.stringify({ sub: '42', exp: Math.floor(Date.now() / 1000) + 300, password_change_required: 'true' }))}.signature`;
+    auth.login('agent', 'sample-password').subscribe(() => {
+      http.get('/api/v1/tickets').subscribe();
+    });
+
+    const loginRequest = controller.expectOne('http://localhost:5018/api/v1/auth/login');
+    expect(loginRequest.request.headers.has('Authorization')).toBe(false);
+    loginRequest.flush({ accessToken, tokenType: 'Bearer', expiresIn: 300, userId: 42, loginName: 'agent', displayName: 'Test Agent' });
+    expect(auth.session()?.passwordRotationRequired).toBe(true);
+
+    const protectedRequest = controller.expectOne('/api/v1/tickets');
+    expect(protectedRequest.request.headers.get('Authorization')).toBe(`Bearer ${accessToken}`);
+    protectedRequest.flush({ items: [] });
+  });
+
   it('clears the session and navigates to login on 401', () => {
     http.get('/api/v1/tickets').subscribe({ error: () => undefined });
     const request = controller.expectOne('/api/v1/tickets');

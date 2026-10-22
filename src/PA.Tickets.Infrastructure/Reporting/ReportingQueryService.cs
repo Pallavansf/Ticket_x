@@ -4,10 +4,18 @@ using PA.Tickets.Application.Reporting;
 using PA.Tickets.Domain.Tickets;
 using PA.Tickets.Infrastructure.Persistence;
 using PA.Tickets.Infrastructure.Execution;
+using PA.Tickets.Infrastructure.Foundations;
 
 namespace PA.Tickets.Infrastructure.Reporting;
 
-public sealed class ReportingQueryService(TicketsDbContext db, ExecutionDbContext execution, IAuthorizationService authorization, TimeProvider clock) : IReportingQueryService
+public sealed record TicketAgingContributor(long TicketId, string TicketNumber);
+public sealed record TicketAgingQueryResult(ReportResult Result, IReadOnlyList<TicketAgingContributor> Contributors);
+public interface ITicketAgingContributorQuery
+{
+    Task<TicketAgingQueryResult> QueryTicketAgingWithContributorsAsync(ReportQueryRequest request, long actor, string? correlationId, CancellationToken ct);
+}
+
+public sealed class ReportingQueryService(TicketsDbContext db, ExecutionDbContext execution, IAuthorizationService authorization, TimeProvider clock) : IReportingQueryService, ITicketAgingContributorQuery
 {
     private const int DefaultPageSize = 25;
     private const int MaxPageSize = 100;
@@ -48,6 +56,14 @@ public sealed class ReportingQueryService(TicketsDbContext db, ExecutionDbContex
     public ReportDefinition GetDefinition(string code) => Definitions.FirstOrDefault(x => string.Equals(x.Code, code, StringComparison.OrdinalIgnoreCase))
         ?? throw new KeyNotFoundException("The requested report was not found.");
 
+    public async Task<TicketAgingQueryResult> QueryTicketAgingWithContributorsAsync(ReportQueryRequest request, long actor, string? correlationId, CancellationToken ct)
+    {
+        var definition = GetDefinition("ticket-aging");
+        Validate(request, definition);
+        await authorization.EnsurePermissionAsync(actor, definition.Permission, null, ct);
+        var tickets = await AuthorizedTickets(actor, ct);
+        return await AgingWithContributors(definition, request, tickets, ct);
+    }
     public async Task<ReportResult> QueryAsync(string code, ReportQueryRequest request, long actor, string? correlationId, CancellationToken ct)
     {
         var definition = GetDefinition(code);
@@ -79,11 +95,7 @@ public sealed class ReportingQueryService(TicketsDbContext db, ExecutionDbContex
         var now = clock.GetUtcNow();
         var user = await db.AdministrationUsers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == actor && x.Active, ct)
             ?? throw new UnauthorizedAccessException("The authenticated subject is not an active user.");
-        var admin = await (from membership in db.AdministrationUserRoles.AsNoTracking()
-                           join role in db.AdministrationRoles.AsNoTracking() on membership.RoleId equals role.Id
-                           where membership.UserId == actor && membership.Active && membership.ValidFrom <= now && (membership.ValidTo == null || membership.ValidTo > now)
-                               && role.Active && role.Code == "ADMINISTRATOR"
-                           select role.Id).AnyAsync(ct);
+        var admin = await authorization.HasPermissionAsync(actor, "TICKET_READ", new AuthorizationResource(OrganizationId: null), ct) && await OrganizationScopeAuthorization.HasEffectiveSuperAdminOrganizationScopeAsync(db, actor, now, ct);
         if (admin) return db.Tickets.AsNoTracking();
         var clients = db.AdministrationUserClients.AsNoTracking().Where(x => x.UserId == actor && x.Active && x.ValidFrom <= now && (x.ValidTo == null || x.ValidTo > now)).Select(x => x.ClientId);
         return db.Tickets.AsNoTracking().Where(x =>
@@ -124,13 +136,18 @@ public sealed class ReportingQueryService(TicketsDbContext db, ExecutionDbContex
         return Result(d, r, total, rows.Select(x => (object)new TicketStatusSummaryRow(statuses.GetValueOrDefault(x.StatusId, x.StatusId.ToString()), x.Count)).ToArray());
     }
 
-    private async Task<ReportResult> Aging(ReportDefinition d, ReportQueryRequest r, IQueryable<TicketRow> source, CancellationToken ct)
+    private async Task<ReportResult> Aging(ReportDefinition d, ReportQueryRequest r, IQueryable<TicketRow> source, CancellationToken ct) =>
+        (await AgingWithContributors(d, r, source, ct)).Result;
+
+    private async Task<TicketAgingQueryResult> AgingWithContributors(ReportDefinition d, ReportQueryRequest r, IQueryable<TicketRow> source, CancellationToken ct)
     {
         var q = ApplyFilters(source, r).Where(x => x.StatusId != (int)TicketStatus.Closed && x.StatusId != (int)TicketStatus.Cancelled);
         var total = await q.CountAsync(ct);
         var rows = await (r.Descending ? q.OrderBy(x => x.CreatedAt).ThenBy(x => x.Id) : q.OrderByDescending(x => x.CreatedAt).ThenBy(x => x.Id)).Skip((r.Page - 1) * r.PageSize).Take(r.PageSize).Select(x => new AgingProjection(x.Id,x.Number,x.Subject,x.TypeId,x.PriorityId,x.StatusId,x.CreatedAt)).ToListAsync(ct);
         var priorities = await PriorityMap(ct); var statuses = await StatusMap(ct); var now = clock.GetUtcNow();
-        return Result(d, r, total, rows.Select(x => (object)new TicketAgingRow(x.Number,x.Subject,TypeName(x.TypeId),priorities.GetValueOrDefault(x.PriorityId ?? 0,"Unspecified"),statuses.GetValueOrDefault(x.StatusId,x.StatusId.ToString()),x.CreatedAt,Math.Max(0,(now-x.CreatedAt).Days))).ToArray());
+        var displayRows = rows.Select(x => (object)new TicketAgingRow(x.Number,x.Subject,TypeName(x.TypeId),priorities.GetValueOrDefault(x.PriorityId ?? 0,"Unspecified"),statuses.GetValueOrDefault(x.StatusId,x.StatusId.ToString()),x.CreatedAt,Math.Max(0,(now-x.CreatedAt).Days))).ToArray();
+        var contributors = rows.Select(x => new TicketAgingContributor(x.Id, x.Number)).ToArray();
+        return new TicketAgingQueryResult(Result(d, r, total, displayRows), contributors);
     }
 
     private async Task<ReportResult> Assignment(ReportDefinition d, ReportQueryRequest r, IQueryable<TicketRow> source, CancellationToken ct)

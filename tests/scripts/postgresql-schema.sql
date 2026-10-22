@@ -27,8 +27,12 @@ create table if not exists "PA_TICKETS" (
   "N_EVIDENCE_COUNT" integer not null default 0,
   "N_APPROVAL_REQUIRED" integer not null default 0,
   "N_APPROVED" integer not null default 0,
-  "N_LAST_EXECUTOR" bigint
+  "N_LAST_EXECUTOR" bigint,
+  "N_APPROVER_USER_ID" bigint,
+  "N_ROW_VERSION" integer not null default 0
 );
+alter table "PA_TICKETS" add column if not exists "N_APPROVER_USER_ID" bigint;
+alter table "PA_TICKETS" add column if not exists "N_ROW_VERSION" integer not null default 0;
 create table if not exists "PA_TICKETS_WORK_ITEM" (
   "N_WORK_ITEM_ID" bigint primary key default nextval('"PA_TICKETS_WORK_ITEM_SEQ"'),
   "N_TICKET_ID" bigint not null references "PA_TICKETS"("N_TICKET_ID"),
@@ -578,5 +582,4 @@ alter table "PA_TICKETS_WORKFLOW_INSTANCE" alter column "N_WORKFLOW_INSTANCE_ID"
 alter table "PA_TICKETS_WORKFLOW_STEP_INSTANCE" alter column "N_STEP_INSTANCE_ID" set default nextval('"PA_TICKETS_WORKFLOW_STEP_INSTANCE_SEQ"');
 alter table "PA_TICKETS_APPROVAL" alter column "N_APPROVAL_ID" set default nextval('"PA_TICKETS_APPROVAL_SEQ"');
 alter table "PA_TICKETS_SLA" alter column "N_SLA_ID" set default nextval('"PA_TICKETS_SLA_SEQ"');
-
 

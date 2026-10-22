@@ -1,0 +1,73 @@
+<main class="user-admin">
+  <header class="heading">
+    <div><p class="eyebrow">Security administration</p><h1>User administration</h1>
+      <p>Create accounts, update profiles, manage account status, and issue temporary passwords.</p></div>
+      <a routerLink="/app/admin/roles">Role administration</a>
+  </header>
+
+  @if (error()) { <p class="message error" role="alert">{{ error() }}</p> }
+  @if (notice()) { <p class="message success" role="status">{{ notice() }}</p> }
+  @if (loading()) { <p role="status">Loading users…</p> }
+
+  <section class="panel" aria-labelledby="create-user-title">
+    <h2 id="create-user-title">Create user</h2>
+    <form class="form-grid" (ngSubmit)="createUser()">
+      <label>User code<input name="userCode" [(ngModel)]="createUserCode" required maxlength="100" autocomplete="off"></label>
+      <label>Login name<input name="loginName" [(ngModel)]="createLoginName" required maxlength="200" autocomplete="off"></label>
+      <label>Display name<input name="displayName" [(ngModel)]="createDisplayName" required maxlength="300"></label>
+      <label>Email<input name="email" [(ngModel)]="createEmail" type="email" maxlength="320"></label>
+      <label>Department<select name="department" [ngModel]="createDepartmentId" (ngModelChange)="setCreateDepartment($event ?? '')">
+        <option [ngValue]="null">Unassigned</option>
+        @for (department of departments(); track department.id) { @if (department.active) { <option [ngValue]="department.id">{{ department.name }}</option> } }
+      </select></label>
+      <label>Team<select name="team" [(ngModel)]="createTeamId" [disabled]="!createDepartmentId">
+        <option [ngValue]="null">Unassigned</option>
+        @for (team of createTeamOptions; track team.id) { <option [ngValue]="team.id">{{ team.name }}</option> }
+      </select></label>
+      <button type="submit" [disabled]="saving() || !createUserCode.trim() || !createLoginName.trim() || !createDisplayName.trim()">Create account</button>
+    </form>
+    <p class="hint">A new account has no password or role until you set a temporary password and assign a role below.</p>
+  </section>
+
+  <div class="workspace">
+    <section class="panel" aria-labelledby="user-list-title">
+      <div class="panel-title"><h2 id="user-list-title">Users</h2><button type="button" (click)="load()" [disabled]="loading()">Refresh</button></div>
+      @if (!loading() && users().length === 0) { <p>No users are available in your authorized scope.</p> }
+      <ul class="user-list">
+        @for (user of users(); track user.id) {
+          <li><button type="button" class="user-choice" [class.selected]="selectedId() === user.id" (click)="selectUser(user)">
+            <span><strong>{{ user.displayName }}</strong><small>{{ user.loginName }} · {{ departmentName(user.departmentId) }} / {{ teamName(user.teamId) }}</small></span>
+            <span class="status" [class.inactive]="!user.active">{{ user.active ? 'Active' : 'Inactive' }}</span>
+          </button></li>
+        }
+      </ul>
+    </section>
+
+    @if (selectedUser(); as user) {
+      <section class="panel details" aria-labelledby="user-details-title">
+        <div class="panel-title"><div><p class="eyebrow">User #{{ user.id }}</p><h2 id="user-details-title">{{ user.displayName }}</h2></div>
+          <button type="button" class="danger" (click)="setActive(user, !user.active)" [disabled]="saving()">{{ user.active ? 'Deactivate' : 'Activate' }}</button>
+        </div>
+        <p class="hint">Account identity and organizational scope are managed by authorized administration APIs. Role membership changes are available through role administration.</p>
+        <form class="form-grid" (ngSubmit)="saveProfile()">
+          <label>Display name<input name="editDisplayName" [(ngModel)]="editDisplayName" required maxlength="300"></label>
+          <label>Email<input name="editEmail" [(ngModel)]="editEmail" type="email" maxlength="320"></label>
+          <label>Phone<input name="editPhone" [(ngModel)]="editPhone" maxlength="50"></label>
+          <button type="submit" [disabled]="saving() || !editDisplayName.trim()">Save profile</button>
+        </form>
+        <dl class="facts"><div><dt>User code</dt><dd>{{ user.userCode }}</dd></div><div><dt>Login</dt><dd>{{ user.loginName }}</dd></div>
+          <div><dt>Department</dt><dd>{{ departmentName(user.departmentId) }}</dd></div><div><dt>Team</dt><dd>{{ teamName(user.teamId) }}</dd></div>
+          <div><dt>Email verified</dt><dd>{{ user.emailVerified ? 'Yes' : 'No' }}</dd></div></dl>
+        <form class="password-form" (ngSubmit)="setPassword()">
+          <label>Temporary password<input name="temporaryPassword" [(ngModel)]="newPassword" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label>
+          <button type="submit" [disabled]="saving() || newPassword.length < 12">Set password</button>
+        </form>
+        <p class="hint">Setting a password forces the user to change it at next sign in. Password values are sent only to the API and are not shown again.</p>
+        <a routerLink="/app/admin/roles">Assign or review role membership</a>
+        <p class="hint">Client membership and scope changes require approved server-side workflows; this screen does not simulate those assignments.</p>
+      </section>
+    } @else if (!loading()) {
+      <section class="panel"><h2>User details</h2><p>Select a user or create an account to manage its profile.</p></section>
+    }
+  </div>
+</main>

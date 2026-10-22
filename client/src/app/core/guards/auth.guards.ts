@@ -14,9 +14,8 @@ export const guestGuard: CanActivateFn = () => {
 };
 
 export const permissionGuard: CanActivateFn = (route) => {
-  const permission = route.data['permission'];
-  if (typeof permission !== 'string' || inject(AuthService).hasPermission(permission)) return true;
+  const permission = route.data?.['permission'];
+  if (typeof permission === 'string' && permission.length > 0 && inject(AuthService).hasPermission(permission)) return true;
   return inject(Router).createUrlTree(['/unauthorized']);
 };
-
 

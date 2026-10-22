@@ -42,6 +42,39 @@ public sealed class TicketLifecycleConfiguredTransitionTests
         Assert.Equal(0, setup.Repository.SaveCount);
     }
 
+    [Fact]
+    public async Task Execution_rejects_an_executor_outside_the_actor_assignment_scope()
+    {
+        var setup = CreateExecutionService(allowedExecutor: 60);
+        var originalEvents = setup.Ticket.UncommittedEvents.ToArray();
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            setup.Service.ExecuteAsync(1, 5, 70, 50, CancellationToken.None));
+
+        Assert.Equal((50L, 1L, 10L, 20L, 70L), setup.Authorizer.AssignmentAttempt);
+        Assert.Equal(0, setup.Repository.SaveCount);
+        Assert.Null(setup.Ticket.CurrentAssignee);
+        Assert.Null(setup.Ticket.LastExecutor);
+        Assert.Equal(TicketStatus.Routed, setup.Ticket.Status);
+        Assert.Null(Assert.Single(setup.Ticket.WorkItems).AssignedToUserId);
+        Assert.Equal(originalEvents, setup.Ticket.UncommittedEvents);
+    }
+
+    [Fact]
+    public async Task Execution_preserves_authorized_actor_and_executor_identity()
+    {
+        var setup = CreateExecutionService(allowedExecutor: 60);
+
+        var result = await setup.Service.ExecuteAsync(1, 5, 60, 50, CancellationToken.None);
+
+        Assert.Equal((50L, 1L, 10L, 20L, 60L), setup.Authorizer.AssignmentAttempt);
+        Assert.Equal(1, setup.Repository.SaveCount);
+        Assert.Equal(TicketStatus.InProgress, result.Status);
+        Assert.Equal(60, setup.Ticket.CurrentAssignee);
+        Assert.Equal(60, setup.Ticket.LastExecutor);
+        Assert.Equal(50, Assert.Single(setup.Ticket.UncommittedEvents, x => x.Action == "WORK_ITEM_STARTED").ActorUserId);
+    }
+
     [Theory]
     [InlineData(TicketStatus.New, "NEW")]
     [InlineData(TicketStatus.Classified, "TRIAGE")]
@@ -84,6 +117,39 @@ public sealed class TicketLifecycleConfiguredTransitionTests
         return (service, repository, configuration);
     }
 
+    private static (
+        TicketLifecycleService Service,
+        TestTicketRepository Repository,
+        TestTicketAccessAuthorizer Authorizer,
+        Ticket Ticket) CreateExecutionService(long allowedExecutor)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var ticket = Ticket.Create(1, "T-1", TicketType.Request, "Subject", null, 50, 50, now);
+        ticket.Classify(1, 2, 3, 4, 50, now);
+        ticket.Route(5, "T-1-WI-001", 10, 20, 50, now);
+        var repository = new TestTicketRepository(ticket);
+        var authorizer = new TestTicketAccessAuthorizer(allowedExecutor);
+        var service = new TicketLifecycleService(
+            repository,
+            null!,
+            authorizer,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            TimeProvider.System,
+            null!,
+            null!,
+            new TestStatusConfiguration(allowed: true),
+            new TestPriorityConfiguration());
+        return (service, repository, authorizer, ticket);
+    }
+
     private sealed class TestTicketRepository(Ticket ticket) : ITicketRepository
     {
         public int SaveCount { get; private set; }
@@ -103,13 +169,34 @@ public sealed class TicketLifecycleConfiguredTransitionTests
         public Task<TicketSearchPage> SearchAsync(TicketSearchCriteria criteria, CancellationToken ct) => throw new NotSupportedException();
     }
 
-    private sealed class TestTicketAccessAuthorizer : ITicketAccessAuthorizer
+    private sealed class TestTicketAccessAuthorizer(long? allowedExecutor = null) : ITicketAccessAuthorizer
     {
+        public (long Actor, long? TicketId, long? DepartmentId, long? TeamId, long? AssigneeId)? AssignmentAttempt { get; private set; }
+
         public Task EnsureCanMutateAsync(long actorUserId, Ticket ticket, CancellationToken ct) => Task.CompletedTask;
 
         public Task EnsureCanAccessAsync(long actorUserId, Ticket ticket, CancellationToken ct) => Task.CompletedTask;
 
         public Task EnsureCanSearchAsync(long actorUserId, CancellationToken ct) => Task.CompletedTask;
+
+        public Task EnsureCanAssignAsync(
+            long actorUserId,
+            AuthorizationResource ticketResource,
+            long? departmentId,
+            long? teamId,
+            long? assigneeUserId,
+            CancellationToken ct)
+        {
+            AssignmentAttempt = (
+                actorUserId,
+                ticketResource.TicketId,
+                departmentId,
+                teamId,
+                assigneeUserId);
+            if (assigneeUserId != allowedExecutor)
+                throw new UnauthorizedAccessException("The assignment target is outside the actor's assignment scope.");
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TestStatusConfiguration(bool? allowed) : ITicketStatusConfigurationRepository

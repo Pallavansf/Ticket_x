@@ -31,16 +31,26 @@ create table if not exists "PA_TICKETS_USER" (
   "N_USER_ID" bigint primary key,
   "S_USER_CODE" varchar(100) not null unique,
   "S_LOGIN_NAME" varchar(200) not null unique,
+  "S_PASSWORD_HASH" varchar(500),
+  "N_PASSWORD_ROTATION_REQUIRED" boolean not null default false,
   "S_DISPLAY_NAME" varchar(300) not null,
   "S_EMAIL" varchar(320),
+  "S_PHONE" varchar(50),
   "N_DEPARTMENT_ID" bigint references "PA_TICKETS_DEPARTMENT"("N_DEPARTMENT_ID"),
   "N_TEAM_ID" bigint references "PA_TICKETS_TEAM"("N_TEAM_ID"),
+  "N_MANAGER_USER_ID" bigint references "PA_TICKETS_USER"("N_USER_ID"),
+  "N_EMAIL_VERIFIED" boolean not null default false,
   "N_ACTIVE" boolean not null default true,
   "D_CREATED_AT" timestamptz not null,
   "N_CREATED_BY" bigint not null,
   "D_UPDATED_AT" timestamptz,
   "N_UPDATED_BY" bigint
 );
+alter table "PA_TICKETS_USER" add column if not exists "N_PASSWORD_ROTATION_REQUIRED" boolean not null default false;
+alter table "PA_TICKETS_USER" add column if not exists "S_PHONE" varchar(50);
+alter table "PA_TICKETS_USER" add column if not exists "N_MANAGER_USER_ID" bigint references "PA_TICKETS_USER"("N_USER_ID");
+alter table "PA_TICKETS_USER" add column if not exists "N_EMAIL_VERIFIED" boolean not null default false;
+create unique index if not exists "UK_PA_TICKETS_USER_EMAIL_UPPER" on "PA_TICKETS_USER" (upper("S_EMAIL"));
 create table if not exists "PA_TICKETS_ROLE" (
   "N_ROLE_ID" bigint primary key default nextval('"PA_TICKETS_ROLE_SEQ"'),
   "S_ROLE_CODE" varchar(100) not null unique,

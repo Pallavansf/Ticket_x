@@ -33,3 +33,5 @@ package-lock.zip
 .debugwf/bin/
 .debugwf/obj/
 .debugwf/
+
+.env.test.local

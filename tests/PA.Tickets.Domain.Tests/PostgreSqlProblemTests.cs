@@ -112,7 +112,7 @@ public sealed class PostgreSqlProblemTests
         {
             await using var scope = provider.CreateAsyncScope();
             var problems = scope.ServiceProvider.GetRequiredService<IProblemService>();
-            var problem = await problems.CreateAsync(new CreateProblemCommand("Database failover drift", "Recurring failover stops", "Quorum is undersized in the failover cluster", 1001, 1, 2, 3, 4, "problem-sla-create", "problem-sla-key"), 1001, CancellationToken.None);
+            var problem = await problems.CreateAsync(new CreateProblemCommand("Database failover drift", "Recurring failover stops", "Quorum is undersized in the failover cluster", 1001, ServiceId: 1, CategoryId: 2, PriorityId: 4, CorrelationId: "problem-sla-create", IdempotencyKey: "problem-sla-key"), 1001, CancellationToken.None);
             problemId = problem.TicketId;
             var db = scope.ServiceProvider.GetRequiredService<ExecutionDbContext>();
 

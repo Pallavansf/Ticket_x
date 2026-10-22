@@ -1,11 +1,21 @@
-﻿<div class="login-page"><section class="login-card" aria-labelledby="login-title"><p class="eyebrow">PA TICKETS</p><h1 id="login-title">Sign in</h1><p class="intro">Use the organization identity provider configured for this environment.</p>
-  @if (errorMessage) { <app-status-panel title="Sign-in unavailable" [message]="errorMessage" tone="error" /> }
+﻿<div class="login-page"><section class="login-card" aria-labelledby="login-title"><p class="eyebrow">PA TICKETS</p><h1 id="login-title">Sign in</h1><p class="intro">Use your PA Tickets account credentials.</p>
+  @if (errorMessage) { <app-status-panel [title]="requiresPasswordRotation ? 'Password change required' : 'Sign-in unavailable'" [message]="errorMessage" tone="error" /> }
+  @if (requiresPasswordRotation) {
+    <p class="intro">Your administrator provided a temporary password. Choose a new password before continuing.</p>
+    <form [formGroup]="rotationForm" (ngSubmit)="changePassword()" novalidate>
+      <label for="new-password">New password</label><input id="new-password" type="password" formControlName="newPassword" autocomplete="new-password" />
+      @if (rotationForm.controls.newPassword.touched && rotationForm.controls.newPassword.invalid) { <small class="field-error">Use a password between 12 and 1024 characters.</small> }
+      <label for="confirm-password">Confirm new password</label><input id="confirm-password" type="password" formControlName="confirmPassword" autocomplete="new-password" />
+      <button class="submit" type="submit" [disabled]="loading">{{ loading ? 'Updating…' : 'Change password' }}</button>
+    </form>
+  } @else {
   <form [formGroup]="form" (ngSubmit)="submit()" novalidate>
-    <label for="identifier">Email or user ID</label><input id="identifier" type="text" formControlName="identifier" autocomplete="username" />
-    @if (form.controls.identifier.touched && form.controls.identifier.invalid) { <small class="field-error">Enter your email or user ID.</small> }
+    <label for="identifier">Login name</label><input id="identifier" type="text" formControlName="identifier" autocomplete="username" />
+    @if (form.controls.identifier.touched && form.controls.identifier.invalid) { <small class="field-error">Enter your login name.</small> }
     <label for="password">Password</label><div class="password-field"><input id="password" [type]="showPassword ? 'text' : 'password'" formControlName="password" autocomplete="current-password" /><button type="button" (click)="showPassword = !showPassword">{{ showPassword ? 'Hide' : 'Show' }}</button></div>
     @if (form.controls.password.touched && form.controls.password.invalid) { <small class="field-error">Password must be at least 8 characters.</small> }
     <button class="submit" type="submit" [disabled]="loading">{{ loading ? 'Connecting…' : 'Sign in' }}</button>
   </form>
-  <p class="notice">The API currently validates bearer tokens but does not provide a login or token issuance endpoint. This screen is ready for the approved OIDC client integration.</p>
+  <p class="notice">Sign in with your PA Tickets username and password. Your access token is held in memory for this session.</p>
+  }
 </section></div>

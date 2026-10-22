@@ -4,13 +4,16 @@ using System.Security.Claims;
 using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
+using System.Threading.RateLimiting;
 
 namespace PA.Tickets.Api;
 
@@ -30,16 +33,51 @@ public static class ApiSecurityConfiguration
         if (environment.IsProduction())
         {
             ValidateProductionConfiguration(configuration);
-            services.AddHostedService<OidcJwtConfigurationStartupValidator>();
+            if (!string.IsNullOrWhiteSpace(configuration["Auth:Authority"]))
+                services.AddHostedService<OidcJwtConfigurationStartupValidator>();
         }
 
-        if (environment.IsEnvironment("Testing") && string.IsNullOrWhiteSpace(testSigningKey))
+        if (environment.IsEnvironment("Testing") &&
+            string.IsNullOrWhiteSpace(testSigningKey) &&
+            string.IsNullOrWhiteSpace(configuration["Auth:Local:SigningKey"]))
         {
             services.AddAuthentication("Test")
                 .AddScheme<AuthenticationSchemeOptions, TestingAuthenticationHandler>("Test", _ => { });
         }
+        else if (!string.IsNullOrWhiteSpace(configuration["Auth:Local:SigningKey"]))
+        {
+            var localIssuer = configuration["Auth:Local:Issuer"];
+            var audience = configuration["Auth:Audience"];
+            var localSigningKey = configuration["Auth:Local:SigningKey"]!;
+            ValidateLocalJwtConfiguration(localIssuer, audience, localSigningKey, configuration.GetValue<int?>("Auth:Local:TokenLifetimeMinutes") ?? 30);
+            services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                })
+                .AddPolicyScheme(JwtBearerDefaults.AuthenticationScheme, JwtBearerDefaults.AuthenticationScheme, options =>
+                {
+                    options.ForwardDefaultSelector = context => SelectBearerScheme(context, localIssuer!);
+                })
+                .AddJwtBearer("LocalBearer", options =>
+                {
+                    options.RequireHttpsMetadata = !environment.IsDevelopment();
+                    options.MapInboundClaims = true;
+                    options.IncludeErrorDetails = false;
+                    ConfigureLocalJwt(options, localIssuer!, audience!, localSigningKey);
+                })
+                .AddJwtBearer("OidcBearer", options =>
+                {
+                    options.RequireHttpsMetadata = !environment.IsDevelopment();
+                    options.MapInboundClaims = true;
+                    options.IncludeErrorDetails = false;
+                    ConfigureOidcJwt(options, configuration);
+                });
+        }
         else
         {
+            if (configuration.GetValue<bool>("Auth:Enabled") && !environment.IsEnvironment("Testing"))
+                throw new InvalidOperationException("Enabled local authentication requires Auth:Local:SigningKey from protected configuration.");
             services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 .AddJwtBearer(options =>
                 {
@@ -58,6 +96,31 @@ public static class ApiSecurityConfiguration
         }
 
         services.AddAuthorization();
+        services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                context.HttpContext.Response.ContentType = "application/problem+json";
+                await context.HttpContext.Response.WriteAsJsonAsync(
+                    new ProblemDetails
+                    {
+                        Status = StatusCodes.Status429TooManyRequests,
+                        Title = "Too many sign-in attempts. Try again later."
+                    },
+                    cancellationToken);
+            };
+            options.AddPolicy("login", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetLoginRateLimitPartition(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 5,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+        });
         services.AddCors(options =>
         {
             options.AddPolicy("Client", policy =>
@@ -68,6 +131,9 @@ public static class ApiSecurityConfiguration
             });
         });
     }
+
+    internal static string GetLoginRateLimitPartition(HttpContext context) =>
+        context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown-client";
 
     public static void UseTrustedForwardedHeaders(
         IApplicationBuilder app,
@@ -150,6 +216,25 @@ public static class ApiSecurityConfiguration
         RequireSubjectClaim(options);
     }
 
+    private static void ConfigureLocalJwt(JwtBearerOptions options, string issuer, string audience, string signingKey)
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = issuer,
+            ValidateAudience = true,
+            ValidAudience = audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            RequireSignedTokens = true,
+            RequireExpirationTime = true,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+            ValidAlgorithms = [SecurityAlgorithms.HmacSha256]
+        };
+        RequireSubjectClaim(options);
+    }
+
     private static void ConfigureOidcJwt(JwtBearerOptions options, IConfiguration configuration)
     {
         options.Authority = configuration["Auth:Authority"];
@@ -198,13 +283,54 @@ public static class ApiSecurityConfiguration
         var issuer = configuration["Auth:Issuer"];
         var authority = configuration["Auth:Authority"];
         var audience = configuration["Auth:Audience"];
-        if (!IsHttpsUri(issuer) || !IsHttpsUri(authority) || string.IsNullOrWhiteSpace(audience))
+        var localIssuer = configuration["Auth:Local:Issuer"];
+        var localSigningKey = configuration["Auth:Local:SigningKey"];
+        var tokenLifetime = configuration.GetValue<int?>("Auth:Local:TokenLifetimeMinutes") ?? 30;
+        if (string.IsNullOrWhiteSpace(audience))
+            throw new InvalidOperationException("Production local authentication requires a non-empty Auth:Audience.");
+        ValidateLocalJwtConfiguration(localIssuer, audience, localSigningKey, tokenLifetime);
+        var oidcConfigured = !string.IsNullOrWhiteSpace(issuer) || !string.IsNullOrWhiteSpace(authority);
+        if (oidcConfigured && (!IsHttpsUri(issuer) || !IsHttpsUri(authority)))
         {
             throw new InvalidOperationException(
-                "Production authentication requires HTTPS Auth:Issuer and Auth:Authority values and a non-empty Auth:Audience. Signing keys are obtained from the configured OIDC authority.");
+                "Optional Production OIDC authentication requires HTTPS Auth:Issuer and Auth:Authority values.");
         }
 
         _ = GetAllowedOrigins(configuration, new ProductionEnvironment());
+    }
+
+    private static void ValidateLocalJwtConfiguration(string? issuer, string? audience, string? signingKey, int tokenLifetimeMinutes)
+    {
+        if (string.IsNullOrWhiteSpace(issuer) ||
+            string.IsNullOrWhiteSpace(audience) ||
+            string.IsNullOrWhiteSpace(signingKey) ||
+            Encoding.UTF8.GetByteCount(signingKey) < 32 ||
+            tokenLifetimeMinutes is < 1 or > 1440)
+        {
+            throw new InvalidOperationException("Local JWT authentication requires Auth:Local:Issuer, Auth:Audience, a protected Auth:Local:SigningKey of at least 32 bytes, and Auth:Local:TokenLifetimeMinutes between 1 and 1440.");
+        }
+    }
+
+    private static string SelectBearerScheme(HttpContext context, string localIssuer)
+    {
+        var authorization = context.Request.Headers.Authorization.ToString();
+        if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            return "LocalBearer";
+
+        try
+        {
+            var token = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler()
+                .ReadJwtToken(authorization["Bearer ".Length..]);
+            return string.Equals(token.Issuer, localIssuer, StringComparison.Ordinal) ? "LocalBearer" : "OidcBearer";
+        }
+        catch (SecurityTokenException)
+        {
+            return "LocalBearer";
+        }
+        catch (ArgumentException)
+        {
+            return "LocalBearer";
+        }
     }
 
     private static bool IsAllowedProductionOrigin(string? value)
@@ -244,7 +370,7 @@ public sealed class OidcJwtConfigurationStartupValidator(
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        var options = optionsMonitor.Get(JwtBearerDefaults.AuthenticationScheme);
+        var options = optionsMonitor.Get("OidcBearer");
         var manager = options.ConfigurationManager
             ?? throw new InvalidOperationException("Production JWT signing metadata is not configured.");
         var configuration = await manager.GetConfigurationAsync(cancellationToken);

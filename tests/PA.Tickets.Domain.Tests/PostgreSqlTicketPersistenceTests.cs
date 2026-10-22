@@ -84,7 +84,7 @@ public sealed class PostgreSqlTicketPersistenceTests
     }
 
     [Fact]
-    public async Task Concurrent_ticket_saves_preserve_a_single_audit_chain()
+    public async Task Concurrent_ticket_lifecycle_saves_allow_only_one_transition()
     {
         PostgreSqlTestEnvironment.EnsureConfigured();
         await using var provider = BuildProvider();
@@ -100,17 +100,38 @@ public sealed class PostgreSqlTicketPersistenceTests
             }
 
             using var start = new ManualResetEventSlim(false);
+            using var ready = new CountdownEvent(12);
             var writes = Enumerable.Range(0, 12).Select(async index =>
             {
                 await using var scope = provider.CreateAsyncScope();
                 var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
-                var ticket = await repository.GetAsync(ticketId, CancellationToken.None) ?? throw new InvalidOperationException("Ticket fixture was not found.");
-                ticket.TransitionSpecializedStatus(TicketStatus.Resolved, 9001, DateTimeOffset.UtcNow, $"parallel-{index}");
+                Ticket ticket;
+                try
+                {
+                    ticket = await repository.GetAsync(ticketId, CancellationToken.None) ?? throw new InvalidOperationException("Ticket fixture was not found.");
+                    ticket.TransitionSpecializedStatus(TicketStatus.Resolved, 9001, DateTimeOffset.UtcNow, $"parallel-{index}");
+                }
+                finally
+                {
+                    ready.Signal();
+                }
                 start.Wait();
-                await repository.SaveAsync(ticket, CancellationToken.None);
+                try
+                {
+                    await repository.SaveAsync(ticket, CancellationToken.None);
+                    return true;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
             }).ToArray();
+            var snapshotsReady = ready.Wait(TimeSpan.FromSeconds(30));
             start.Set();
-            await Task.WhenAll(writes);
+            var results = await Task.WhenAll(writes);
+            Assert.True(snapshotsReady, "Concurrent ticket snapshots were not all prepared within 30 seconds.");
+            Assert.Equal(1, results.Count(x => x));
+            Assert.Equal(11, results.Count(x => !x));
 
             await using var verifyScope = provider.CreateAsyncScope();
             var db = verifyScope.ServiceProvider.GetRequiredService<TicketsDbContext>();
@@ -120,7 +141,62 @@ public sealed class PostgreSqlTicketPersistenceTests
                 .ToArrayAsync();
             var result = AuditChainVerifier.Verify(rows, "TICKET", ticketId.ToString());
             Assert.True(result.IsValid, $"{result.Failure} at audit {result.FailedAuditId}.");
-            Assert.Equal(13, result.RecordsVerified);
+            Assert.Equal(2, result.RecordsVerified);
+            Assert.Equal((int)TicketStatus.Resolved, await db.Tickets.Where(x => x.Id == ticketId).Select(x => x.StatusId).SingleAsync());
+        }
+        finally
+        {
+            if (ticketId != 0)
+            {
+                await using var cleanupScope = provider.CreateAsyncScope();
+                var db = cleanupScope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {ticketId}");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_approval_persists_designated_approver_and_decision_actor()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var provider = BuildProvider();
+        long ticketId = 0;
+        try
+        {
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var service = scope.ServiceProvider.GetRequiredService<ITicketLifecycleService>();
+                ticketId = (await service.CreateAsync(
+                    new CreateTicketCommand(TicketType.Request, $"Approval authority {Guid.NewGuid():N}", "approval authority", 1001, 1001),
+                    CancellationToken.None)).Id;
+
+                var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
+                var ticket = await repository.GetAsync(ticketId, CancellationToken.None) ?? throw new InvalidOperationException("Ticket fixture was not found.");
+                ticket.RequestApproval(2001, 1001, DateTimeOffset.UtcNow);
+                await repository.SaveAsync(ticket, CancellationToken.None);
+            }
+
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
+                var ticket = await repository.GetAsync(ticketId, CancellationToken.None) ?? throw new InvalidOperationException("Ticket fixture was not found.");
+                Assert.Equal(2001L, ticket.ApprovalApproverUserId);
+                Assert.Throws<InvalidOperationException>(() => ticket.Approve(2002, DateTimeOffset.UtcNow));
+                Assert.Equal(TicketStatus.PendingApproval, ticket.Status);
+                ticket.Approve(2001, DateTimeOffset.UtcNow);
+                await repository.SaveAsync(ticket, CancellationToken.None);
+            }
+
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+                var row = await db.Tickets.AsNoTracking().SingleAsync(x => x.Id == ticketId);
+                Assert.Equal(2001L, row.ApprovalApproverUserId);
+                Assert.Equal(1, row.Approved);
+                Assert.True(await db.Audits.AnyAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketId.ToString() && x.Action == "APPROVAL_APPROVED" && x.ActorId == 2001));
+            }
         }
         finally
         {

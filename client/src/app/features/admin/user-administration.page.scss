@@ -1,0 +1,25 @@
+.user-admin { display:grid; gap:1rem; max-width:80rem; margin:0 auto; padding:1.5rem; color:#1d2939; }
+.heading,.panel-title { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }
+.heading h1,.panel h2 { margin:0; }
+.heading p { color:#5e6b7d; }
+.eyebrow { margin:0 0 .3rem; color:#45648e; font-size:.78rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.panel { display:grid; align-content:start; gap:1rem; padding:1.2rem; border:1px solid #d9e0e8; border-radius:.75rem; background:#fff; box-shadow:0 1px 3px rgb(22 34 51 / 5%); }
+.workspace { display:grid; grid-template-columns:minmax(17rem,.8fr) minmax(25rem,1.6fr); align-items:start; gap:1rem; }
+.form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(13rem,1fr)); gap:.85rem; align-items:end; }
+label { display:grid; gap:.35rem; color:#35445a; font-size:.9rem; font-weight:600; }
+input,select { width:100%; min-height:2.5rem; padding:.5rem .65rem; border:1px solid #bdc8d6; border-radius:.4rem; font:inherit; }
+button,a { min-height:2.4rem; padding:.5rem .75rem; border:1px solid #bdc8d6; border-radius:.4rem; background:#fff; color:#183b68; font:inherit; font-weight:600; cursor:pointer; }
+button:disabled { cursor:not-allowed; opacity:.55; }
+a { display:inline-flex; align-items:center; text-decoration:none; }
+.message { margin:0; padding:.75rem 1rem; border-radius:.45rem; }
+.error { background:#fff0ef; color:#9d2922; }.success { background:#ecf8ef; color:#21633a; }
+.hint { margin:0; color:#5e6b7d; font-size:.88rem; }
+.user-list { display:grid; gap:.45rem; margin:0; padding:0; list-style:none; }
+.user-choice { display:flex; width:100%; justify-content:space-between; align-items:center; gap:.5rem; text-align:left; }
+.user-choice span:first-child { display:grid; gap:.2rem; }.user-choice small { color:#5e6b7d; font-weight:400; }
+.user-choice.selected { border-color:#315f9b; background:#edf4fc; }
+.status { color:#21633a; font-size:.8rem; }.status.inactive { color:#9d2922; }
+.danger { color:#9d2922; }.facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(10rem,1fr)); gap:.7rem; margin:0; }
+.facts div { display:grid; gap:.2rem; }.facts dt { color:#5e6b7d; font-size:.8rem; }.facts dd { margin:0; font-weight:600; }
+.password-form { display:flex; align-items:end; gap:.75rem; }.password-form label { flex:1; }
+@media(max-width:760px) { .workspace { grid-template-columns:1fr; }.heading { flex-direction:column; }.password-form { align-items:stretch; flex-direction:column; } }

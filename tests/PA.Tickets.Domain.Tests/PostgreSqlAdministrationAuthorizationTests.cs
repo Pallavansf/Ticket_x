@@ -25,7 +25,10 @@ public sealed class PostgreSqlAdministrationAuthorizationTests
         var teamB = baseId + 4;
         var userA = baseId + 11;
         var userB = baseId + 12;
-        var userWithoutOrgScope = baseId + 13;
+        var userWithoutMembershipScope = baseId + 13;
+        var membershipAId = baseId + 21;
+        var membershipBId = baseId + 22;
+        var membershipWithoutScopeId = baseId + 23;
         try
         {
             await using (var scope = provider.CreateAsyncScope())
@@ -41,10 +44,14 @@ public sealed class PostgreSqlAdministrationAuthorizationTests
                 db.AdministrationUsers.AddRange(
                     new AdministrationUserRow { Id = userA, UserCode = $"U-{userA}", LoginName = $"u-{userA}", DisplayName = "User A", DepartmentId = departmentA, TeamId = teamA, Active = true, CreatedAt = now, CreatedBy = 9001 },
                     new AdministrationUserRow { Id = userB, UserCode = $"U-{userB}", LoginName = $"u-{userB}", DisplayName = "User B", DepartmentId = departmentB, TeamId = teamB, Active = true, CreatedAt = now, CreatedBy = 9001 },
-                    new AdministrationUserRow { Id = userWithoutOrgScope, UserCode = $"U-{userWithoutOrgScope}", LoginName = $"u-{userWithoutOrgScope}", DisplayName = "User without organizational scope", Active = true, CreatedAt = now, CreatedBy = 9001 });
-                db.AdministrationUserRoles.Add(new AdministrationUserRoleRow { UserId = userA, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 });
-                db.AdministrationUserRoles.Add(new AdministrationUserRoleRow { UserId = userB, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 });
-                db.AdministrationUserRoles.Add(new AdministrationUserRoleRow { UserId = userWithoutOrgScope, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 });
+                    new AdministrationUserRow { Id = userWithoutMembershipScope, UserCode = $"U-{userWithoutMembershipScope}", LoginName = $"u-{userWithoutMembershipScope}", DisplayName = "User without membership scope", Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationUserRoles.AddRange(
+                    new AdministrationUserRoleRow { Id = membershipAId, UserId = userA, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleRow { Id = membershipBId, UserId = userB, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleRow { Id = membershipWithoutScopeId, UserId = userWithoutMembershipScope, RoleId = 1, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationUserRoleScopes.AddRange(
+                    new AdministrationUserRoleScopeRow { Id = baseId + 31, UserRoleId = membershipAId, ScopeType = "TEAM", DepartmentId = departmentA, TeamId = teamA, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleScopeRow { Id = baseId + 32, UserRoleId = membershipBId, ScopeType = "TEAM", DepartmentId = departmentB, TeamId = teamB, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = 9001 });
                 await db.SaveChangesAsync();
             }
 
@@ -57,14 +64,16 @@ public sealed class PostgreSqlAdministrationAuthorizationTests
             Assert.NotNull(page);
             Assert.True(page.TotalCount >= 0);
             var foreignDepartmentSearch = new TicketSearchCriteria(null, null, null, null, null, null, null, null, departmentB, null, null, null, null, 1, 25);
-            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.SearchAsync(foreignDepartmentSearch, userWithoutOrgScope, CancellationToken.None));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.SearchAsync(foreignDepartmentSearch, userWithoutMembershipScope, CancellationToken.None));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.SearchAsync(scoped, userWithoutMembershipScope, CancellationToken.None));
         }
         finally
         {
             await using var scope = provider.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
-            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER_ROLE\" where \"N_USER_ID\" in ({userA},{userB},{userWithoutOrgScope})");
-            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER\" where \"N_USER_ID\" in ({userA},{userB},{userWithoutOrgScope})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER_ROLE_SCOPE\" where \"N_USER_ROLE_ID\" in ({membershipAId},{membershipBId},{membershipWithoutScopeId})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER_ROLE\" where \"N_USER_ID\" in ({userA},{userB},{userWithoutMembershipScope})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER\" where \"N_USER_ID\" in ({userA},{userB},{userWithoutMembershipScope})");
             await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_TEAM\" where \"N_TEAM_ID\" in ({teamA},{teamB})");
             await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_DEPARTMENT\" where \"N_DEPARTMENT_ID\" in ({departmentA},{departmentB})");
         }
@@ -182,6 +191,92 @@ public sealed class PostgreSqlAdministrationAuthorizationTests
     }
 
     [Fact]
+    public async Task Admin_head_delegation_is_identity_scoped_and_does_not_expand_ticket_scope()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var provider = BuildProvider();
+        var baseId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 100 + Random.Shared.Next(1, 99);
+        var departmentHead = baseId + 1;
+        var departmentAdmin = baseId + 2;
+        var teamHead = baseId + 3;
+        var teamAdmin = baseId + 4;
+        var headUser = baseId + 11;
+        var assignedAdmin = baseId + 12;
+        var unassignedAdmin = baseId + 13;
+        var headMembership = baseId + 21;
+        var assignedMembership = baseId + 22;
+        var unassignedMembership = baseId + 23;
+        var departmentScope = baseId + 31;
+        var adminGroupScope = baseId + 32;
+        var delegationId = baseId + 41;
+        try
+        {
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+                var now = DateTimeOffset.UtcNow;
+                var adminHeadRoleId = await db.AdministrationRoles.Where(x => x.Code == "ADMIN_HEAD").Select(x => x.Id).SingleAsync();
+                var adminRoleId = await db.AdministrationRoles.Where(x => x.Code == "ADMIN").Select(x => x.Id).SingleAsync();
+                db.AdministrationDepartments.AddRange(
+                    new AdministrationDepartmentRow { Id = departmentHead, Code = $"D-{departmentHead}", Name = "Head Department", Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationDepartmentRow { Id = departmentAdmin, Code = $"D-{departmentAdmin}", Name = "Admin Department", Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationTeams.AddRange(
+                    new AdministrationTeamRow { Id = teamHead, DepartmentId = departmentHead, Code = $"T-{teamHead}", Name = "Head Team", Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationTeamRow { Id = teamAdmin, DepartmentId = departmentAdmin, Code = $"T-{teamAdmin}", Name = "Admin Team", Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationUsers.AddRange(
+                    new AdministrationUserRow { Id = headUser, UserCode = $"U-{headUser}", LoginName = $"u-{headUser}", DisplayName = "Admin Head", DepartmentId = departmentHead, TeamId = teamHead, Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRow { Id = assignedAdmin, UserCode = $"U-{assignedAdmin}", LoginName = $"u-{assignedAdmin}", DisplayName = "Assigned Admin", DepartmentId = departmentAdmin, TeamId = teamAdmin, Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRow { Id = unassignedAdmin, UserCode = $"U-{unassignedAdmin}", LoginName = $"u-{unassignedAdmin}", DisplayName = "Unassigned Admin", DepartmentId = departmentAdmin, TeamId = teamAdmin, Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationUserRoles.AddRange(
+                    new AdministrationUserRoleRow { Id = headMembership, UserId = headUser, RoleId = adminHeadRoleId, ValidFrom = now.AddMinutes(-2), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleRow { Id = assignedMembership, UserId = assignedAdmin, RoleId = adminRoleId, ValidFrom = now.AddMinutes(-2), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleRow { Id = unassignedMembership, UserId = unassignedAdmin, RoleId = adminRoleId, ValidFrom = now.AddMinutes(-2), Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdministrationUserRoleScopes.AddRange(
+                    new AdministrationUserRoleScopeRow { Id = departmentScope, UserRoleId = headMembership, ScopeType = "DEPARTMENT", DepartmentId = departmentHead, ValidFrom = now.AddMinutes(-2), Active = true, CreatedAt = now, CreatedBy = 9001 },
+                    new AdministrationUserRoleScopeRow { Id = adminGroupScope, UserRoleId = headMembership, ScopeType = "ADMIN_GROUP", ValidFrom = now.AddMinutes(-2), Active = true, CreatedAt = now, CreatedBy = 9001 });
+                db.AdminHeadDelegations.Add(new AdminHeadDelegationRow
+                {
+                    Id = delegationId,
+                    AdminHeadUserId = headUser,
+                    AdminUserId = assignedAdmin,
+                    ValidFrom = now.AddMinutes(-1),
+                    Active = true,
+                    CreatedAt = now,
+                    CreatedBy = 9001
+                });
+                await db.SaveChangesAsync();
+            }
+
+            await using var scope2 = provider.CreateAsyncScope();
+            var authorization = scope2.ServiceProvider.GetRequiredService<IAuthorizationService>();
+            Assert.True(await authorization.HasPermissionAsync(headUser, "USER_ADMIN",
+                new AuthorizationResource(DepartmentId: departmentAdmin, TeamId: teamAdmin, AssignedUserId: assignedAdmin, ResourceType: "USER"),
+                CancellationToken.None));
+            Assert.False(await authorization.HasPermissionAsync(headUser, "USER_ADMIN",
+                new AuthorizationResource(DepartmentId: departmentAdmin, TeamId: teamAdmin, AssignedUserId: unassignedAdmin, ResourceType: "USER"),
+                CancellationToken.None));
+            Assert.False(await authorization.HasPermissionAsync(headUser, "TICKET_UPDATE",
+                new AuthorizationResource(TicketId: baseId, DepartmentId: departmentAdmin, TeamId: teamAdmin, AssignedUserId: assignedAdmin),
+                CancellationToken.None));
+            var administration = scope2.ServiceProvider.GetRequiredService<IAdministrationService>();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => administration.AssignAdminDelegationAsync(
+                headUser, headUser, unassignedAdmin, DateTimeOffset.UtcNow.AddMinutes(-1), null,
+                "must be denied to Admin Head", CancellationToken.None));
+        }
+        finally
+        {
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_ADMIN_HEAD_DELEGATION\" where \"N_ADMIN_DELEGATION_ID\" = {delegationId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER_ROLE_SCOPE\" where \"N_ROLE_SCOPE_ID\" in ({departmentScope},{adminGroupScope})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER_ROLE\" where \"N_USER_ROLE_ID\" in ({headMembership},{assignedMembership},{unassignedMembership})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_USER\" where \"N_USER_ID\" in ({headUser},{assignedAdmin},{unassignedAdmin})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_TEAM\" where \"N_TEAM_ID\" in ({teamHead},{teamAdmin})");
+            await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_DEPARTMENT\" where \"N_DEPARTMENT_ID\" in ({departmentHead},{departmentAdmin})");
+        }
+    }
+
+    [Fact]
     public async Task Administration_mutations_are_permission_gated_persisted_and_audited()
     {
         PostgreSqlTestEnvironment.EnsureConfigured();
@@ -240,6 +335,14 @@ public sealed class PostgreSqlAdministrationAuthorizationTests
                 Assert.False(clientHistory[0].Active);
                 Assert.True(roleHistory[1].Active);
                 Assert.True(clientHistory[1].Active);
+                var removalAudit = await db.Audits.AsNoTracking().SingleAsync(
+                    x => x.EntityType == "ADMINISTRATION" &&
+                         x.EntityId == firstRole.Id.ToString() &&
+                         x.Action == "USER_ROLE_REMOVED");
+                Assert.Contains(":active;", removalAudit.OldValue);
+                Assert.Contains(":inactive;", removalAudit.NewValue);
+                Assert.Contains("validFrom=", removalAudit.OldValue);
+                Assert.Contains("validTo=", removalAudit.NewValue);
 
                 var authorization = scope.ServiceProvider.GetRequiredService<IAuthorizationService>();
                 Assert.True(await authorization.HasPermissionAsync(userId, "TICKET_READ", null, CancellationToken.None));

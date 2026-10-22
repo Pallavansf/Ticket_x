@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -57,6 +58,13 @@ public static class DependencyInjection
         services.AddScoped<AuditChainCoordinator>();
         services.AddScoped<OperationalMetadataAuditWriter>();
         services.AddScoped<IAuthorizationService, DatabaseAuthorizationService>();
+        services.AddScoped<IAuthorizationFactsReader, DatabaseAuthorizationFactsReader>();
+        services.AddScoped<IAdminHeadDelegationFactsReader, DatabaseDelegationFactsReader>();
+        services.AddScoped<IAdministrationTargetReader, DatabaseAdministrationTargetReader>();
+        services.AddScoped<ISpectatorMembershipReader, DatabaseSpectatorMembershipReader>();
+        services.AddScoped<ILocalAuthenticationService, LocalAuthenticationService>();
+        services.AddScoped<IInitialAdministratorProvisioner, InitialAdministratorProvisioner>();
+        services.TryAddSingleton<IPasswordHasher<AdministrationUserRow>, PasswordHasher<AdministrationUserRow>>();
         services.AddScoped<IReportingQueryService, ReportingQueryService>();
         services.AddScoped<IKpiService, KpiService>();
         services.AddScoped<IDashboardService, DashboardService>();
@@ -86,6 +94,7 @@ public static class DependencyInjection
             throw new InvalidOperationException($"Unsupported storage provider '{configuration["Storage:Provider"]}'.");
         services.AddScoped<IFileStorage, LocalFileStorage>();
         services.AddScoped<IContentScanner, UnconfiguredContentScanner>();
+        services.AddScoped<IAttachmentDownloadReader, EfAttachmentDownloadReader>();
         services.AddScoped<IAttachmentService, AttachmentService>();
         if (postgres) services.AddScoped<ICommunicationStore, CommunicationStore>();
         else services.AddScoped<ICommunicationStore, OracleCommunicationStore>();
@@ -121,6 +130,3 @@ public static class DependencyInjection
         return services;
     }
 }
-
-
-

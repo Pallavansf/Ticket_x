@@ -37,13 +37,18 @@ public sealed class PostgreSqlCommunicationDeliveryTests
         await using var provider = BuildProvider();
         var ticketId = 0L;
         var templateId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1, 500);
+        var channelConfigId = templateId + 1;
+        var providerConfigId = templateId + 2;
         try
         {
             await using var scope = provider.CreateAsyncScope();
             var tickets = scope.ServiceProvider.GetRequiredService<ITicketLifecycleService>();
             ticketId = (await tickets.CreateAsync(new CreateTicketCommand(TicketType.Request, $"Communication {Guid.NewGuid():N}", "slice 3", 1001, 1001), CancellationToken.None)).Id;
             var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
-            db.CommunicationTemplates.Add(new CommunicationTemplateRow { Id = templateId, Code = "WELCOME", Channel = "EMAIL", Version = 1, Subject = "Hello {{TicketNumber}}", Body = "Ticket {{TicketNumber}}: {{TicketTitle}}", Status = "ACTIVE", EffectiveFrom = DateTimeOffset.UtcNow.AddMinutes(-1) });
+            var now = DateTimeOffset.UtcNow;
+            db.CommunicationTemplates.Add(new CommunicationTemplateRow { Id = templateId, Code = "WELCOME", Channel = "EMAIL", Version = 1, Subject = "Hello {{TicketNumber}}", Body = "Ticket {{TicketNumber}}: {{TicketTitle}}", Status = "ACTIVE", EffectiveFrom = now.AddMinutes(-1) });
+            db.CommunicationChannelConfigurations.Add(new CommunicationChannelConfigurationRow { Id = channelConfigId, Channel = "EMAIL", Enabled = true, EffectiveFrom = now.AddMinutes(-1), UpdatedAt = now, UpdatedBy = 1001, RowVersion = 1 });
+            db.CommunicationProviderConfigurations.Add(new CommunicationProviderConfigurationRow { Id = providerConfigId, ProviderCode = "deterministic", Channel = "EMAIL", Enabled = true, MaxAttempts = 3, RetryDelaySeconds = 0, EffectiveFrom = now.AddMinutes(-1), UpdatedAt = now, UpdatedBy = 1001, RowVersion = 1 });
             await db.SaveChangesAsync();
             var service = scope.ServiceProvider.GetRequiredService<ICommunicationService>();
             var queued = await service.QueueAsync(new QueueCommunicationCommand(ticketId, null, CommunicationChannel.Email, "delivered", "WELCOME", "person@example.invalid", null, null, null, null, "slice3-correlation", "slice3-communication-1", new Dictionary<string, string> { ["TicketNumber"] = "REQ-TEST", ["TicketTitle"] = "Safe title" }), 1001, CancellationToken.None);
@@ -64,7 +69,7 @@ public sealed class PostgreSqlCommunicationDeliveryTests
             Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "COMMUNICATION_DELIVERED"));
             Assert.True(await db.Audits.AnyAsync(x => x.EntityType == "COMMUNICATION" && x.EntityId == queued.PublicId));
         }
-        finally { await CleanupAsync(provider, ticketId, templateId); }
+        finally { await CleanupAsync(provider, ticketId, templateId, channelConfigId, providerConfigId); }
     }
 
     [Fact]
@@ -112,7 +117,7 @@ public sealed class PostgreSqlCommunicationDeliveryTests
         if (restricted) services.AddScoped<ITicketAccessAuthorizer, RestrictedAuthorizer>();
         return services.BuildServiceProvider(validateScopes: true);
     }
-    private static async Task CleanupAsync(ServiceProvider provider,long ticketId,long templateId)
+    private static async Task CleanupAsync(ServiceProvider provider,long ticketId,long templateId,long channelConfigId=0,long providerConfigId=0)
     {
         if (ticketId == 0) return;
         await using var scope = provider.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
@@ -120,6 +125,8 @@ public sealed class PostgreSqlCommunicationDeliveryTests
         await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_COMMUNICATION_ATTEMPT\" where \"N_COMMUNICATION_ID\" in (select \"N_COMMUNICATION_ID\" from \"PA_TICKETS_COMMUNICATION\" where \"N_TICKET_ID\" = {ticketId})");
         await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_COMMUNICATION\" where \"N_TICKET_ID\" = {ticketId}");
         if (templateId != 0) await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_COMMUNICATION_TEMPLATE\" where \"N_TEMPLATE_VERSION_ID\" = {templateId}");
+        if (providerConfigId != 0) await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_COMMUNICATION_PROVIDER_CONFIG\" where \"N_PROVIDER_CONFIG_ID\" = {providerConfigId}");
+        if (channelConfigId != 0) await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_COMMUNICATION_CHANNEL_CONFIG\" where \"N_CHANNEL_CONFIG_ID\" = {channelConfigId}");
         await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS_EVENT\" where \"N_TICKET_ID\" = {ticketId}");
         await db.Database.ExecuteSqlInterpolatedAsync($"delete from \"PA_TICKETS\" where \"N_TICKET_ID\" = {ticketId}");
     }

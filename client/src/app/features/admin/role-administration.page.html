@@ -1,0 +1,332 @@
+<section class="rbac-page">
+  <header class="page-heading">
+    <div>
+      <p class="eyebrow">Security administration</p>
+      <h1>Roles and permissions</h1>
+      <p>Configure capabilities separately from each membership's effective resource scope.</p>
+    </div>
+  </header>
+
+  <section class="panel approval-queue" aria-labelledby="approval-queue-heading">
+    <div class="panel-heading">
+      <div>
+        <h2 id="approval-queue-heading">Sensitive RBAC approval queue</h2>
+        <p>Approval is separate from proposal creation. Decisions revalidate current authority and target state before applying a grant.</p>
+      </div>
+      <button type="button" (click)="loadProposals()" [disabled]="proposalLoading() || !!proposalBusyId()">Refresh queue</button>
+    </div>
+    @if (proposalError()) {
+      <p class="message message--error" role="alert">{{ proposalError() }}</p>
+    }
+    @if (proposalLoading()) {
+      <p class="busy-state" role="status">Refreshing approval queue…</p>
+    } @else if (!proposals().length) {
+      <p>No visible approval proposals.</p>
+    } @else {
+      <div class="proposal-list">
+        @for (proposal of proposals(); track proposal.id) {
+          <article class="proposal-card">
+            <div class="proposal-heading">
+              <h3>{{ proposal.moduleCode }} / {{ proposal.actionCode }} — {{ proposal.targetPermissionName }}</h3>
+              <span class="proposal-status" [class.proposal-status--pending]="proposal.status === 'PENDING'">
+                {{ proposalStatus(proposal) }}
+              </span>
+            </div>
+            <dl>
+              <div><dt>Initiator</dt><dd>User #{{ proposal.initiatorUserId }}</dd></div>
+              <div><dt>Target role</dt><dd>{{ proposal.targetRoleCode }} ({{ proposal.targetRoleId }})</dd></div>
+              <div><dt>Permission</dt><dd>{{ proposal.targetPermissionCode }} · {{ proposal.securityClass }} · {{ proposal.scopeClass }}</dd></div>
+              <div><dt>Change</dt><dd>Not granted → granted</dd></div>
+              <div><dt>Created</dt><dd>{{ proposal.createdAt | date:'medium' }}</dd></div>
+              <div><dt>Expires</dt><dd>{{ proposal.expiresAt | date:'medium' }}</dd></div>
+              <div><dt>Reason</dt><dd>{{ proposal.reason }}</dd></div>
+              @if (proposal.decisionAt) {
+                <div><dt>Decision</dt><dd>{{ proposal.decisionAt | date:'medium' }} · {{ proposal.decisionReason }}</dd></div>
+              }
+              @if (proposal.applicationOutcome) {
+                <div><dt>Application outcome</dt><dd>{{ proposal.applicationOutcome }}</dd></div>
+              }
+            </dl>
+            @if (proposal.canApprove && proposalIsActionable(proposal)) {
+              <div class="proposal-actions">
+                <button type="button" (click)="approveProposal(proposal)"
+                  [disabled]="proposalBusyId() === proposal.id || !!proposalBusyId()">Approve and apply</button>
+                <label>Rejection reason
+                  <textarea maxlength="1000" required
+                    [ngModel]="proposalRejectionReasons()[proposal.id] || ''"
+                    (ngModelChange)="setProposalRejectionReason(proposal.id, $event)"></textarea>
+                </label>
+                <button type="button" class="danger-button" (click)="rejectProposal(proposal)"
+                  [disabled]="proposalBusyId() === proposal.id || !!proposalBusyId() || !(proposalRejectionReasons()[proposal.id]?.trim())">
+                  Reject
+                </button>
+              </div>
+            } @else if (proposal.canCancel && proposalIsActionable(proposal)) {
+              <div class="proposal-actions">
+                <p>Your proposal cannot be approved by you.</p>
+                <label>Cancellation reason
+                  <textarea maxlength="1000" required
+                    [ngModel]="proposalCancellationReasons()[proposal.id] || ''"
+                    (ngModelChange)="setProposalCancellationReason(proposal.id, $event)"></textarea>
+                </label>
+                <button type="button" class="danger-button" (click)="cancelProposal(proposal)"
+                  [disabled]="proposalBusyId() === proposal.id || !!proposalBusyId() || !(proposalCancellationReasons()[proposal.id]?.trim())">
+                  Cancel proposal
+                </button>
+              </div>
+            }
+            @if (proposalBusyId() === proposal.id) {
+              <p class="busy-state" role="status">Applying decision…</p>
+            }
+          </article>
+        }
+      </div>
+    }
+  </section>
+
+  @if (error()) {
+    <div class="message message--error" role="alert">{{ error() }}</div>
+  }
+  @if (notice()) {
+    <div class="message message--success" role="status">{{ notice() }}</div>
+  }
+  @if (busy()) {
+    <p class="busy-state" role="status">Working…</p>
+  }
+
+  <section class="panel" aria-labelledby="role-list-heading">
+    <div class="panel-heading">
+      <div>
+        <h2 id="role-list-heading">Role catalogue</h2>
+        <p>The five built-in identities are protected. Custom roles have no fixed count limit.</p>
+      </div>
+    </div>
+    <div class="role-list">
+      @for (role of roles(); track role.id) {
+        <button
+          type="button"
+          class="role-choice"
+          [class.role-choice--selected]="selectedRoleId() === role.id"
+          [disabled]="!role.active"
+          (click)="selectRole(role.id)">
+          <span>{{ role.name }}</span>
+          <code>{{ role.code }}</code>
+          <small>{{ role.systemRole ? 'Protected built-in' : 'Custom role' }}{{ role.active ? '' : ' · inactive' }}</small>
+        </button>
+      }
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="create-role-heading">
+    <div class="panel-heading">
+      <div>
+        <h2 id="create-role-heading">Create a custom role</h2>
+        <p>Codes are immutable, normalized to uppercase, and cannot alias a built-in or retained legacy role.</p>
+      </div>
+    </div>
+    <form class="form-grid" (ngSubmit)="createRole()">
+      <label>Role code
+        <input name="newRoleCode" [(ngModel)]="newRoleCode" required maxlength="64" pattern="[A-Za-z][A-Za-z0-9_]*">
+      </label>
+      <label>Display name
+        <input name="newRoleName" [(ngModel)]="newRoleName" required maxlength="200">
+      </label>
+      <label class="span-two">Description
+        <textarea name="newRoleDescription" [(ngModel)]="newRoleDescription" maxlength="1000"></textarea>
+      </label>
+      <button type="submit" [disabled]="busy() || !newRoleCode.trim() || !newRoleName.trim()">Create role</button>
+    </form>
+  </section>
+
+  @if (selectedRole(); as role) {
+    <section class="panel" aria-labelledby="selected-role-heading">
+      <div class="panel-heading">
+        <div>
+          <h2 id="selected-role-heading">{{ role.name }} <code>{{ role.code }}</code></h2>
+          <p>{{ role.systemRole ? 'This protected built-in role identity cannot be renamed or deactivated.' : 'Custom role code is immutable; name and description can be edited.' }}</p>
+        </div>
+      </div>
+
+      @if (!role.systemRole) {
+        <form class="form-grid details-form" (ngSubmit)="saveRoleDetails()">
+          <label>Display name
+            <input name="editRoleName" [(ngModel)]="editRoleName" required maxlength="200">
+          </label>
+          <label class="span-two">Description
+            <textarea name="editRoleDescription" [(ngModel)]="editRoleDescription" maxlength="1000"></textarea>
+          </label>
+          <button type="submit" [disabled]="busy() || !editRoleName.trim()">Save role details</button>
+        </form>
+      }
+
+      <div class="permission-heading">
+        <div>
+          <h3>Module permissions</h3>
+          <p>Only active, fully classified permissions can authorize requests. The server validates every change.</p>
+        </div>
+      </div>
+      <div class="permission-modules">
+        @for (module of moduleGroups(); track module.code) {
+          <fieldset class="module-group">
+            <legend>{{ module.code }}</legend>
+            @for (permission of module.permissions; track permission.id) {
+              <label class="permission-row">
+                <input
+                  type="checkbox"
+                  [checked]="selectedPermissionIds().has(permission.id)"
+                  [disabled]="(role.code === 'SUPER_ADMIN' && !savedPermissionIds().has(permission.id)) || !isPermissionConfigurable(permission)"
+                  (change)="permissionChanged(permission.id, $event)">
+                <span class="permission-label">
+                  <strong>{{ permission.actionCode }}</strong>
+                  <span>{{ permission.name }}</span>
+                </span>
+                <small>{{ permission.scopeClass }} · {{ permission.securityClass }}{{ permission.readOnly ? ' · read-only' : '' }}{{ isPermissionConfigurable(permission) ? '' : ' · unavailable: ' + permissionConfigurationBlockReason(permission) }}</small>
+              </label>
+            }
+          </fieldset>
+        }
+      </div>
+
+      <section class="effective-summary" aria-labelledby="effective-summary-heading">
+        <h3 id="effective-summary-heading">Effective permission summary before save</h3>
+        @if (effectiveSummary().length) {
+          <ul>
+            @for (permission of effectiveSummary(); track permission.id) {
+              <li><strong>{{ permission.moduleCode }} / {{ permission.actionCode }}</strong> — {{ permission.name }}</li>
+            }
+          </ul>
+        } @else {
+          <p>No capabilities selected. The role will not authorize protected actions.</p>
+        }
+      </section>
+
+      @if (role.code === 'SUPER_ADMIN') {
+        <p class="message">New Super Admin permission grants are blocked. Existing grants may be revoked to reduce access.</p>
+      }
+      <label class="reason-field">Change reason
+        <textarea name="changeReason" [(ngModel)]="changeReason" required maxlength="1000"></textarea>
+      </label>
+      <button type="button" (click)="savePermissions()"
+        [disabled]="busy()">Save permission mappings</button>
+
+      @if (!role.systemRole) {
+        <div class="deactivate-role">
+          <h3>Deactivate this custom role</h3>
+          <p>Deactivation immediately closes its memberships and scopes. Historical records remain available for audit.</p>
+          <label>Type <code>{{ role.code }}</code> to confirm
+            <input name="deactivateCode" [(ngModel)]="deactivateCode" autocomplete="off">
+          </label>
+          <button type="button" class="danger-button" (click)="deactivateRole()"
+            [disabled]="busy() || deactivateCode.trim() !== role.code || !changeReason.trim()">Deactivate role</button>
+        </div>
+      }
+    </section>
+
+    <section class="panel" aria-labelledby="membership-heading">
+      <div class="panel-heading">
+        <div>
+          <h2 id="membership-heading">Assign role and manage scope</h2>
+          <p>A role grant alone does not define data scope. Scope is effective-dated and separately audited.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        <label>User
+          <select name="selectedUserId" [(ngModel)]="selectedUserId" (ngModelChange)="userChanged()">
+            <option [ngValue]="null">Select an active user</option>
+            @for (user of users(); track user.id) {
+              <option [ngValue]="user.id">{{ user.displayName }} ({{ user.loginName }})</option>
+            }
+          </select>
+        </label>
+        <label>Role to assign
+          <select name="selectedAssignmentRoleId" [(ngModel)]="selectedAssignmentRoleId">
+            <option [ngValue]="null">Select an active role</option>
+            @for (assignableRole of roles(); track assignableRole.id) {
+              @if (assignableRole.active) {
+                <option [ngValue]="assignableRole.id"
+                  [disabled]="['ADMIN', 'ADMIN_HEAD', 'SUPER_ADMIN'].includes(assignableRole.code)">
+                  {{ assignableRole.name }} ({{ assignableRole.code }})
+                </option>
+              }
+            }
+          </select>
+        </label>
+        <label>Membership starts
+          <input type="datetime-local" name="membershipStart" [(ngModel)]="membershipStart" required>
+        </label>
+        <label>Membership ends (optional)
+          <input type="datetime-local" name="membershipEnd" [(ngModel)]="membershipEnd">
+        </label>
+        <button type="button" (click)="assignRole()" [disabled]="busy() || !selectedUserId || !selectedAssignmentRoleId">Assign role</button>
+      </div>
+      <p class="message" role="status">
+        Administrative role grants and role-scope grants are unavailable until independent approval is implemented.
+      </p>
+
+      @if (memberships().length) {
+        <label class="membership-picker">Membership scope to inspect
+          <select name="selectedMembershipId" [ngModel]="selectedMembershipId" (ngModelChange)="selectMembership($event)">
+            <option [ngValue]="null">Select membership</option>
+            @for (membership of memberships(); track membership.id) {
+              <option [ngValue]="membership.id">#{{ membership.id }} · {{ membership.validFrom | date:'mediumDate' }}{{ membership.active ? '' : ' · inactive' }}</option>
+            }
+          </select>
+        </label>
+      }
+
+      @if (selectedMembershipId) {
+        <div class="scope-editor">
+          <h3>Effective scopes</h3>
+          <p class="message" role="status">
+            Scope grants are disabled until pending independent approval is implemented. Existing scope history can be reviewed; ending a scope only narrows access.
+          </p>
+          @if (scopes().length) {
+            <ul class="scope-list">
+              @for (scope of scopes(); track scope.id) {
+                <li>
+                  <span><strong>{{ scope.scopeType }}</strong> · department {{ scope.departmentId ?? '—' }} · team {{ scope.teamId ?? '—' }} · client {{ scope.clientId ?? '—' }} · {{ scope.validFrom | date:'mediumDate' }}{{ scope.validTo ? ' to ' + (scope.validTo | date:'mediumDate') : ' onward' }}{{ scope.active ? '' : ' · inactive' }}</span>
+                  @if (scope.active) {
+                    <button type="button" class="text-button" (click)="removeScope(scope.id)">End scope</button>
+                  }
+                </li>
+              }
+            </ul>
+          } @else {
+            <p>No explicit scope exists. The membership cannot access scoped records until a scope is configured.</p>
+          }
+        </div>
+      }
+    </section>
+  }
+
+  <section class="panel" aria-labelledby="delegation-heading">
+    <div class="panel-heading">
+      <div>
+        <h2 id="delegation-heading">Admin Head delegations</h2>
+        <p>Delegation is explicit, identity-based, effective-dated, and independent of reporting-manager relationships.</p>
+      </div>
+    </div>
+    <p class="message" role="status">
+      Delegation changes are disabled until pending independent approval is implemented. Existing delegation history is read-only.
+    </p>
+    @if (delegationError()) {
+      <div class="message message--error" role="alert">{{ delegationError() }}</div>
+    } @else {
+      <ul class="scope-list">
+        @for (delegation of delegations(); track delegation.id) {
+          <li>
+            <span>
+              <strong>{{ delegationUserLabel(delegation.adminHeadUserId) }}</strong>
+              manages <strong>{{ delegationUserLabel(delegation.adminUserId) }}</strong>
+              · {{ delegation.validFrom | date:'mediumDate' }}
+              {{ delegation.validTo ? ' to ' + (delegation.validTo | date:'mediumDate') : ' onward' }}
+              {{ delegation.active ? '' : ' · inactive' }}
+            </span>
+          </li>
+        } @empty {
+          <li>No delegation records are available.</li>
+        }
+      </ul>
+    }
+  </section>
+</section>

@@ -10,7 +10,7 @@ using PA.Tickets.Infrastructure.Persistence;
 
 namespace PA.Tickets.Infrastructure.Foundations;
 
-public sealed class AttachmentService(TicketsDbContext db,IFileStorage storage,IContentScanner scanner,IConfiguration configuration,AuditChainCoordinator auditLocks,ITicketAccessAuthorizer authorizer,ProviderTransactionRetry retry) : IAttachmentService
+public sealed class AttachmentService(TicketsDbContext db,IAttachmentDownloadReader downloadReader,IFileStorage storage,IContentScanner scanner,IConfiguration configuration,AuditChainCoordinator auditLocks,ITicketAccessAuthorizer authorizer,ProviderTransactionRetry retry) : IAttachmentService
 {
     private const long MaximumUploadBytes=50L*1024*1024;
     private long MaxSize => Math.Min(configuration.GetValue("Storage:MaxFileSizeBytes",MaximumUploadBytes),MaximumUploadBytes);
@@ -250,11 +250,13 @@ public sealed class AttachmentService(TicketsDbContext db,IFileStorage storage,I
     }
     public async Task<(AttachmentVersion Version,Stream Content)> DownloadAsync(long id,int version,long actor,CancellationToken ct)
     {
-        var attachment=await db.Attachments.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==id,ct)??throw new KeyNotFoundException("Attachment was not found.");
-        var ticket=await db.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==attachment.TicketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-        await authorizer.EnsureCanAccessAsync(actor,Ticket.Restore(ticket.Id,ticket.Number,(TicketType)ticket.TypeId,(TicketStatus)ticket.StatusId,ticket.RequestedBy,ticket.CreatedBy,ticket.Subject,ticket.Description,ticket.ServiceId,ticket.CategoryId,ticket.RequestTypeId,ticket.PriorityId,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.CurrentAssignee,ticket.CreatedAt,ticket.ResolvedAt,ticket.ClosedAt,ticket.ApprovalRequired==1,ticket.Approved==1,ticket.EvidenceCount,ticket.LastExecutor,[]),ct);
-        var row=await db.AttachmentVersions.AsNoTracking().SingleOrDefaultAsync(x=>x.AttachmentId==id&&x.VersionNo==version,ct)??throw new KeyNotFoundException("Attachment version was not found.");
-        var stream=await storage.OpenReadAsync(row.StorageReference!,ct); using var hash=SHA256.Create(); var actual=await hash.ComputeHashAsync(stream,ct); if(!actual.SequenceEqual(Convert.FromHexString(row.Sha256Hash))){await stream.DisposeAsync();throw new InvalidOperationException("Attachment checksum verification failed.");} stream.Position=0; return (MapVersion(row),stream);
+        var owner=await downloadReader.ReadOwnerAsync(id,ct);
+        if(owner.AttachmentId!=id)throw new KeyNotFoundException("Attachment was not found.");
+        await authorizer.EnsureCanAccessAsync(actor,owner.ParentTicket,ct);
+        var row=await downloadReader.ReadVersionAsync(id,version,ct);
+        if(row.AttachmentId!=id||row.VersionNo!=version||string.IsNullOrWhiteSpace(row.StorageReference)||string.IsNullOrWhiteSpace(row.Sha256Hash))
+            throw new KeyNotFoundException("Attachment version was not found.");
+        var stream=await storage.OpenReadAsync(row.StorageReference,ct); using var hash=SHA256.Create(); var actual=await hash.ComputeHashAsync(stream,ct); if(!actual.SequenceEqual(Convert.FromHexString(row.Sha256Hash))){await stream.DisposeAsync();throw new InvalidOperationException("Attachment checksum verification failed.");} stream.Position=0; return (new AttachmentVersion(row.Id,row.AttachmentId,row.VersionNo,row.FileName,row.ContentType,row.ContentLength,row.StorageProvider,row.StorageReference,row.Sha256Hash,row.Status,row.ChangeReason,row.UploadedAt,row.UploadedBy),stream);
     }
     public Task<Evidence> CreateEvidenceAsync(CreateEvidenceCommand command,long actor,CancellationToken ct)
         => retry.ExecuteAsync<Evidence>(db, async () =>

@@ -10,7 +10,7 @@ using PA.Tickets.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 51L * 1024 * 1024);
-builder.Services.AddControllers();
+builder.Services.AddControllers(options => options.Filters.Add<SpectatorMutationAuthorizationFilter>());
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks()
@@ -58,6 +58,7 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         PA.Tickets.Application.Foundations.ContentRejectedException => StatusCodes.Status422UnprocessableEntity,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
         KeyNotFoundException => StatusCodes.Status404NotFound,
+        Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException => StatusCodes.Status409Conflict,
         InvalidOperationException => StatusCodes.Status409Conflict,
         ArgumentException => StatusCodes.Status400BadRequest,
         _ => StatusCodes.Status500InternalServerError
@@ -90,7 +91,9 @@ if (!app.Environment.IsEnvironment("Testing"))
     app.UseHttpsRedirection();
 }
 app.UseCors("Client");
+app.UseRateLimiter();
 app.UseAuthentication();
+app.UseMiddleware<PasswordRotationRequiredMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("live") });
@@ -123,3 +126,5 @@ public sealed class TestingAuthenticationHandler(
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
     }
 }
+
+public partial class Program { }

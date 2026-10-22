@@ -1,0 +1,66 @@
+﻿-- PA_TICKETS RBAC migration 036 (REVIEW DRAFT; do not execute without approval).
+-- Purpose: persist two-person proposals for the sensitive ROLE_PERMISSION_GRANT operation
+-- currently implemented by the EF entity, service, and API.
+-- Organization-scope proposals are intentionally not represented here: the service currently
+-- rejects direct scope grants and has no scope-proposal endpoint. That capability is BLOCKED
+-- until a separately reviewed contract exists.
+-- This migration creates no proposals and grants no permissions.
+-- Prerequisite: 033 ledger, 034 permission metadata, and approved workflow contract.
+
+BEGIN;
+
+DO $$
+BEGIN
+    IF to_regclass('"PA_TICKETS_ROLE"') IS NULL
+       OR to_regclass('"PA_TICKETS_PERMISSION"') IS NULL
+       OR to_regclass('"PA_TICKETS_USER"') IS NULL THEN
+        RAISE EXCEPTION 'RBAC migration 036 blocked: proposal parent relation is absent';
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS "PA_TICKETS_RBAC_PROPOSAL" (
+    "S_PROPOSAL_ID" varchar(32) NOT NULL,
+    "S_OPERATION_TYPE" varchar(40) NOT NULL,
+    "S_STATUS" varchar(20) NOT NULL,
+    "N_TARGET_ROLE_ID" bigint NOT NULL,
+    "N_TARGET_PERMISSION_ID" bigint NOT NULL,
+    "N_INITIATOR_USER_ID" bigint NOT NULL,
+    "D_CREATED_AT" timestamptz NOT NULL,
+    "D_EXPIRES_AT" timestamptz NOT NULL,
+    "S_REASON" varchar(1000) NOT NULL,
+    "S_IDEMPOTENCY_KEY" varchar(100) NOT NULL,
+    "S_PAYLOAD_JSON" text NOT NULL,
+    "S_PAYLOAD_SHA256" char(64) NOT NULL,
+    "N_APPROVER_USER_ID" bigint,
+    "N_CANCELLED_BY_USER_ID" bigint,
+    "D_DECISION_AT" timestamptz,
+    "S_DECISION_REASON" varchar(1000),
+    "S_APPLICATION_OUTCOME" varchar(80),
+    "S_CORRELATION_ID" varchar(100) NOT NULL,
+    "N_ROW_VERSION" integer NOT NULL,
+    CONSTRAINT "PK_PA_TICKETS_RBAC_PROPOSAL" PRIMARY KEY ("S_PROPOSAL_ID"),
+    CONSTRAINT "CK_PA_TICKETS_RBAC_PROPOSAL_ID" CHECK ("S_PROPOSAL_ID" ~ '^[0-9a-f]{32}$'),
+    CONSTRAINT "CK_PA_TICKETS_RBAC_PROPOSAL_OP" CHECK
+        ("S_OPERATION_TYPE" = 'ROLE_PERMISSION_GRANT'),
+    CONSTRAINT "CK_PA_TICKETS_RBAC_PROPOSAL_STATUS" CHECK
+        ("S_STATUS" IN ('PENDING','APPROVED','REJECTED','APPLIED','EXPIRED','CANCELLED')),
+    CONSTRAINT "CK_PA_TICKETS_RBAC_PROPOSAL_DATES" CHECK ("D_EXPIRES_AT" > "D_CREATED_AT"),
+    CONSTRAINT "CK_PA_TICKETS_RBAC_PROPOSAL_VERSION" CHECK ("N_ROW_VERSION" > 0),
+    CONSTRAINT "FK_PA_TICKETS_RBAC_PROPOSAL_ROLE" FOREIGN KEY ("N_TARGET_ROLE_ID")
+        REFERENCES "PA_TICKETS_ROLE" ("N_ROLE_ID"),
+    CONSTRAINT "FK_PA_TICKETS_RBAC_PROPOSAL_PERMISSION" FOREIGN KEY ("N_TARGET_PERMISSION_ID")
+        REFERENCES "PA_TICKETS_PERMISSION" ("N_PERMISSION_ID"),
+    CONSTRAINT "FK_PA_TICKETS_RBAC_PROPOSAL_INITIATOR" FOREIGN KEY ("N_INITIATOR_USER_ID")
+        REFERENCES "PA_TICKETS_USER" ("N_USER_ID"),
+    CONSTRAINT "FK_PA_TICKETS_RBAC_PROPOSAL_APPROVER" FOREIGN KEY ("N_APPROVER_USER_ID")
+        REFERENCES "PA_TICKETS_USER" ("N_USER_ID"),
+    CONSTRAINT "FK_PA_TICKETS_RBAC_PROPOSAL_CANCELLER" FOREIGN KEY ("N_CANCELLED_BY_USER_ID")
+        REFERENCES "PA_TICKETS_USER" ("N_USER_ID")
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "UX_PA_TICKETS_RBAC_PROPOSAL_IDEMPOTENCY"
+    ON "PA_TICKETS_RBAC_PROPOSAL" ("N_INITIATOR_USER_ID", "S_IDEMPOTENCY_KEY");
+CREATE INDEX IF NOT EXISTS "IX_PA_TICKETS_RBAC_PROPOSAL_QUEUE"
+    ON "PA_TICKETS_RBAC_PROPOSAL" ("S_STATUS", "D_EXPIRES_AT", "D_CREATED_AT");
+
+COMMIT;

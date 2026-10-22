@@ -1,4 +1,5 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.IdentityModel.Tokens.Jwt;
@@ -6,6 +7,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
@@ -22,6 +24,9 @@ public sealed class PostgreSqlApiE2ETests
     private const string JwtTestIssuer = "https://issuer.test.pa-tickets.invalid";
     private const string JwtTestAudience = "pa-tickets-security-tests";
     private const string JwtTestSigningKey = "only-for-automated-tests-32-byte-key";
+    private const string LocalJwtTestIssuer = "pa-tickets-local-auth-tests";
+    private const string LocalJwtTestAudience = "pa-tickets-local-auth-audience";
+    private const string LocalJwtTestSigningKey = "test-only-local-auth-signing-key-with-32-byte-minimum";
 
     [Fact]
     public async Task Health_routes_separate_liveness_and_readiness_and_return_safe_correlation_ids()
@@ -285,6 +290,488 @@ public sealed class PostgreSqlApiE2ETests
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
     }
 
+    [LocalAuthenticationFixtureFact]
+    public async Task Local_password_login_issues_a_valid_bearer_and_preserves_database_rbac()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        var loginName = Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_LOGIN")!;
+        var password = Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_PASSWORD")!;
+        var userId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1, 999);
+        var membershipId = userId + 1000;
+        var now = DateTimeOffset.UtcNow;
+        var user = new AdministrationUserRow
+        {
+            Id = userId,
+            UserCode = $"AUTH-{Guid.NewGuid():N}",
+            LoginName = loginName,
+            DisplayName = "Workstream G Auth Fixture",
+            PasswordHash = new PasswordHasher<AdministrationUserRow>().HashPassword(new AdministrationUserRow(), password),
+            DepartmentId = 501,
+            TeamId = 601,
+            Active = true,
+            CreatedAt = now,
+            CreatedBy = 0
+        };
+        await using (var db = CreateTicketsDb())
+        {
+            db.AdministrationUsers.Add(user);
+            db.AdministrationUserRoles.Add(new AdministrationUserRoleRow
+            {
+                Id = membershipId,
+                UserId = userId,
+                RoleId = 1,
+                ValidFrom = now.AddMinutes(-1),
+                Active = true,
+                CreatedAt = now,
+                CreatedBy = 0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        try
+        {
+            await using var api = await ApiHost.StartAsync(FindRepositoryRoot(), useLocalJwt: true);
+            using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+            using var anonymous = await client.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+            using var rejected = await client.PostAsJsonAsync("/api/v1/auth/login", new { loginName, password = password + "-wrong" });
+            Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+            var rejectedBody = await rejected.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(loginName, rejectedBody, StringComparison.Ordinal);
+            using var unknownUser = await client.PostAsJsonAsync("/api/v1/auth/login", new { loginName = loginName + "-missing", password });
+            Assert.Equal(HttpStatusCode.Unauthorized, unknownUser.StatusCode);
+            Assert.Equal(rejectedBody, await unknownUser.Content.ReadAsStringAsync());
+
+            using var response = await client.PostAsJsonAsync("/api/v1/auth/login", new { loginName, password });
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var result = await response.Content.ReadFromJsonAsync<PA.Tickets.Api.Controllers.LoginResponse>();
+            Assert.NotNull(result);
+            Assert.Equal(userId, result.UserId);
+            Assert.Equal("Bearer", result.TokenType);
+
+            var parsedToken = new JwtSecurityTokenHandler().ReadJwtToken(result.AccessToken);
+            Assert.Equal(LocalJwtTestIssuer, parsedToken.Issuer);
+            Assert.Equal(LocalJwtTestAudience, Assert.Single(parsedToken.Audiences));
+            Assert.Equal(userId.ToString(), parsedToken.Subject);
+            Assert.True(parsedToken.ValidTo > DateTime.UtcNow);
+            Assert.Contains(parsedToken.Claims, claim => claim.Type == "roles" && claim.Value == "OPERATIONS");
+            Assert.Contains(parsedToken.Claims, claim => claim.Type == "permissions" && claim.Value == "TICKET_READ");
+
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", result.AccessToken);
+            using var allowedScope = await client.GetAsync("/api/v1/tickets?page=1&pageSize=1&departmentId=501&teamId=601");
+            Assert.Equal(HttpStatusCode.OK, allowedScope.StatusCode);
+            using var deniedScope = await client.GetAsync("/api/v1/tickets?page=1&pageSize=1&departmentId=502");
+            Assert.Equal(HttpStatusCode.Forbidden, deniedScope.StatusCode);
+            using var forbiddenByRbac = await client.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.Forbidden, forbiddenByRbac.StatusCode);
+            using var forbiddenPasswordReset = await client.PostAsJsonAsync(
+                $"/api/v1/admin/users/{userId}/password",
+                new { password = "replacement-password-should-not-be-set" });
+            Assert.Equal(HttpStatusCode.Forbidden, forbiddenPasswordReset.StatusCode);
+
+            await using (var disableUser = CreateTicketsDb())
+            {
+                await disableUser.AdministrationUsers
+                    .Where(x => x.Id == userId)
+                    .ExecuteUpdateAsync(update => update.SetProperty(x => x.Active, false));
+            }
+            using var disabledAccountRequest = await client.GetAsync("/api/v1/tickets?page=1&pageSize=1");
+            Assert.Equal(HttpStatusCode.Forbidden, disabledAccountRequest.StatusCode);
+        }
+        finally
+        {
+            await using var cleanup = CreateTicketsDb();
+            await cleanup.AdministrationUserRoles.Where(x => x.Id == membershipId).ExecuteDeleteAsync();
+            await cleanup.AdministrationUsers.Where(x => x.Id == userId).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Forced_password_rotation_blocks_other_requests_until_password_change_and_relogin()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        var userId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1, 999);
+        var loginName = $"rotation-{Guid.NewGuid():N}";
+        const string temporaryPassword = "temporary-password-for-rotation-test";
+        const string newPassword = "new-password-after-rotation-test";
+        var now = DateTimeOffset.UtcNow;
+        await using (var db = CreateTicketsDb())
+        {
+            db.AdministrationUsers.Add(new AdministrationUserRow
+            {
+                Id = userId,
+                UserCode = $"ROTATION-{Guid.NewGuid():N}",
+                LoginName = loginName,
+                DisplayName = "Password Rotation Test",
+                PasswordHash = new PasswordHasher<AdministrationUserRow>()
+                    .HashPassword(new AdministrationUserRow(), temporaryPassword),
+                PasswordRotationRequired = true,
+                Active = true,
+                CreatedAt = now,
+                CreatedBy = 0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        try
+        {
+            await using var api = await ApiHost.StartAsync(
+                FindRepositoryRoot(),
+                useLocalJwt: true,
+                localSigningKey: LocalJwtTestSigningKey);
+            using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+            using var login = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new { loginName, password = temporaryPassword });
+            Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+            var loginResponse = await login.Content.ReadFromJsonAsync<PA.Tickets.Api.Controllers.LoginResponse>();
+            Assert.NotNull(loginResponse);
+            Assert.True(loginResponse.PasswordRotationRequired);
+
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", loginResponse.AccessToken);
+            using var blocked = await client.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.Forbidden, blocked.StatusCode);
+            Assert.Contains("Password change is required", await blocked.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+            using var changed = await client.PostAsJsonAsync(
+                "/api/v1/auth/change-password",
+                new { currentPassword = temporaryPassword, newPassword, confirmPassword = newPassword });
+            Assert.Equal(HttpStatusCode.NoContent, changed.StatusCode);
+
+            using var stillBlocked = await client.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.Forbidden, stillBlocked.StatusCode);
+            Assert.Contains("Password change is required", await stillBlocked.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+            using var relogin = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new { loginName, password = newPassword });
+            Assert.Equal(HttpStatusCode.OK, relogin.StatusCode);
+            var rotatedResponse = await relogin.Content.ReadFromJsonAsync<PA.Tickets.Api.Controllers.LoginResponse>();
+            Assert.NotNull(rotatedResponse);
+            Assert.False(rotatedResponse.PasswordRotationRequired);
+            Assert.Contains(
+                new JwtSecurityTokenHandler().ReadJwtToken(rotatedResponse.AccessToken).Claims,
+                claim => claim.Type == "password_change_required" && claim.Value == "false");
+
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rotatedResponse.AccessToken);
+            using var deniedByRbac = await client.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.Forbidden, deniedByRbac.StatusCode);
+            Assert.DoesNotContain("Password change is required", await deniedByRbac.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await using var cleanup = CreateTicketsDb();
+            await cleanup.AdministrationUsers.Where(x => x.Id == userId).ExecuteDeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Administrator_profile_api_is_limited_to_self_and_explicit_transitive_subordinates()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        var baseId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1, 900);
+        var administratorId = baseId;
+        var subordinateId = baseId + 1;
+        var grandchildId = baseId + 2;
+        var unrelatedId = baseId + 3;
+        var otherAdministratorId = baseId + 4;
+        long administratorRoleId;
+        long operationsRoleId;
+        long userAdminPermissionId;
+        long otherAdministratorRoleMembershipId;
+        var ordinaryAdminRoleId = baseId + 5;
+        var ordinaryAdminRolePermissionId = baseId + 6;
+        var ordinaryAdminMembershipId = baseId + 7;
+        var now = DateTimeOffset.UtcNow;
+        var adminEmail = $"admin-{baseId}@example.test";
+        var childEmail = $"child-{baseId}@example.test";
+
+        await using (var db = CreateTicketsDb())
+        {
+            administratorRoleId = await db.AdministrationRoles
+                .Where(x => x.Code == "ADMINISTRATOR")
+                .Select(x => x.Id)
+                .SingleAsync();
+            operationsRoleId = await db.AdministrationRoles
+                .Where(x => x.Code == "OPERATIONS")
+                .Select(x => x.Id)
+                .SingleAsync();
+            userAdminPermissionId = await db.AdministrationPermissions
+                .Where(x => x.Code == "USER_ADMIN")
+                .Select(x => x.Id)
+                .SingleAsync();
+            db.AdministrationUsers.AddRange(
+                ProfileUser(administratorId, "profile-admin", adminEmail, null, now, emailVerified: true),
+                ProfileUser(subordinateId, "profile-subordinate", childEmail, administratorId, now, emailVerified: true),
+                ProfileUser(grandchildId, "profile-grandchild", $"grandchild-{baseId}@example.test", subordinateId, now),
+                ProfileUser(unrelatedId, "profile-unrelated", $"unrelated-{baseId}@example.test", null, now),
+                ProfileUser(otherAdministratorId, "profile-other-admin", $"other-admin-{baseId}@example.test", administratorId, now));
+            db.AdministrationUserRoles.AddRange(
+                new AdministrationUserRoleRow
+                {
+                    UserId = administratorId,
+                    RoleId = administratorRoleId,
+                    ValidFrom = now.AddMinutes(-1),
+                    Active = true,
+                    CreatedAt = now,
+                    CreatedBy = 0
+                },
+                new AdministrationUserRoleRow
+                {
+                    UserId = otherAdministratorId,
+                    RoleId = administratorRoleId,
+                    ValidFrom = now.AddMinutes(-1),
+                    Active = true,
+                    CreatedAt = now,
+                    CreatedBy = 0
+                });
+            db.AdministrationRoles.Add(new AdministrationRoleRow
+            {
+                Id = ordinaryAdminRoleId,
+                Code = $"PROFILE-USER-ADMIN-{baseId}",
+                Name = "Profile test user administrator",
+                SystemRole = false,
+                Active = true
+            });
+            db.AdministrationRolePermissions.Add(new AdministrationRolePermissionRow
+            {
+                Id = ordinaryAdminRolePermissionId,
+                RoleId = ordinaryAdminRoleId,
+                PermissionId = userAdminPermissionId
+            });
+            db.AdministrationUserRoles.Add(new AdministrationUserRoleRow
+            {
+                Id = ordinaryAdminMembershipId,
+                UserId = unrelatedId,
+                RoleId = ordinaryAdminRoleId,
+                ValidFrom = now.AddMinutes(-1),
+                Active = true,
+                CreatedAt = now,
+                CreatedBy = 0
+            });
+            await db.SaveChangesAsync();
+            otherAdministratorRoleMembershipId = await db.AdministrationUserRoles
+                .Where(x => x.UserId == otherAdministratorId && x.RoleId == administratorRoleId)
+                .Select(x => x.Id)
+                .SingleAsync();
+        }
+
+        try
+        {
+            await using var api = await ApiHost.StartAsync(FindRepositoryRoot());
+            using var admin = api.ClientFor(administratorId);
+            using var anonymous = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+            using var anonymousProfile = await anonymous.GetAsync($"/api/v1/admin/users/{administratorId}");
+            Assert.Equal(HttpStatusCode.Unauthorized, anonymousProfile.StatusCode);
+
+            foreach (var allowedId in new[] { administratorId, subordinateId, grandchildId })
+            {
+                using var allowed = await admin.GetAsync($"/api/v1/admin/users/{allowedId}");
+                Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+            }
+            foreach (var deniedId in new[] { unrelatedId, otherAdministratorId })
+            {
+                using var denied = await admin.GetAsync($"/api/v1/admin/users/{deniedId}");
+                Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            }
+
+            using var listResponse = await admin.GetAsync("/api/v1/admin/users");
+            Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+            using var listJson = JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+            var listedIds = listJson.RootElement.EnumerateArray()
+                .Select(x => x.GetProperty("id").GetInt64()).ToHashSet();
+            Assert.Contains(administratorId, listedIds);
+            Assert.Contains(subordinateId, listedIds);
+            Assert.Contains(grandchildId, listedIds);
+            Assert.DoesNotContain(unrelatedId, listedIds);
+            Assert.DoesNotContain(otherAdministratorId, listedIds);
+
+            using var selfUpdate = await admin.PatchAsJsonAsync(
+                $"/api/v1/admin/users/{administratorId}/profile",
+                new
+                {
+                    displayName = "Updated administrator",
+                    email = $"updated-admin-{baseId}@example.test",
+                    phone = "+1-555-0101",
+                    roles = new[] { "ADMINISTRATOR" },
+                    permissions = new[] { "USER_ADMIN" },
+                    managerUserId = subordinateId
+                });
+            Assert.Equal(HttpStatusCode.OK, selfUpdate.StatusCode);
+
+            using var subordinateUpdate = await admin.PatchAsJsonAsync(
+                $"/api/v1/admin/users/{subordinateId}/profile",
+                new
+                {
+                    displayName = "Updated subordinate",
+                    email = $"updated-child-{baseId}@example.test",
+                    phone = "+1-555-0102"
+                });
+            Assert.Equal(HttpStatusCode.OK, subordinateUpdate.StatusCode);
+
+            foreach (var deniedId in new[] { unrelatedId, otherAdministratorId })
+            {
+                using var deniedUpdate = await admin.PatchAsJsonAsync(
+                    $"/api/v1/admin/users/{deniedId}/profile",
+                    new { displayName = "Unauthorized profile change", email = (string?)null, phone = (string?)null });
+                Assert.Equal(HttpStatusCode.Forbidden, deniedUpdate.StatusCode);
+            }
+
+            using var duplicateEmail = await admin.PatchAsJsonAsync(
+                $"/api/v1/admin/users/{subordinateId}/profile",
+                new { displayName = "Updated subordinate", email = $"UPDATED-ADMIN-{baseId}@EXAMPLE.TEST", phone = "+1-555-0102" });
+            Assert.Equal(HttpStatusCode.BadRequest, duplicateEmail.StatusCode);
+            using var invalidEmail = await admin.PatchAsJsonAsync(
+                $"/api/v1/admin/users/{subordinateId}/profile",
+                new { displayName = "Updated subordinate", email = "not-an-email", phone = "+1-555-0102" });
+            Assert.Equal(HttpStatusCode.BadRequest, invalidEmail.StatusCode);
+
+            using (var unrelated = api.ClientFor(unrelatedId))
+            {
+                using var ordinaryAdminList = await unrelated.GetAsync("/api/v1/admin/users");
+                Assert.Equal(HttpStatusCode.OK, ordinaryAdminList.StatusCode);
+                using var ordinaryAdminListJson = JsonDocument.Parse(await ordinaryAdminList.Content.ReadAsStringAsync());
+                Assert.DoesNotContain(
+                    ordinaryAdminListJson.RootElement.EnumerateArray().Select(x => x.GetProperty("id").GetInt64()),
+                    x => x == administratorId || x == otherAdministratorId);
+                using var hiddenAdministrator = await unrelated.GetAsync($"/api/v1/admin/users/{administratorId}");
+                Assert.Equal(HttpStatusCode.Forbidden, hiddenAdministrator.StatusCode);
+                using var directAttempt = await unrelated.PatchAsJsonAsync(
+                    $"/api/v1/admin/users/{administratorId}/profile",
+                    new { displayName = "Direct unauthorized API attempt", email = (string?)null, phone = (string?)null });
+                Assert.Equal(HttpStatusCode.Forbidden, directAttempt.StatusCode);
+                using var administratorDisable = await unrelated.PostAsJsonAsync(
+                    $"/api/v1/admin/users/{administratorId}/active",
+                    new { active = false });
+                Assert.Equal(HttpStatusCode.Forbidden, administratorDisable.StatusCode);
+                using var administratorPasswordReset = await unrelated.PostAsJsonAsync(
+                    $"/api/v1/admin/users/{administratorId}/password",
+                    new { password = "temporary-password-never-used" });
+                Assert.Equal(HttpStatusCode.Forbidden, administratorPasswordReset.StatusCode);
+                using var unrelatedUserAdminManagerUpdate = await unrelated.PutAsJsonAsync(
+                    $"/api/v1/admin/users/{otherAdministratorId}/reporting-manager",
+                    new { managerUserId = administratorId });
+                Assert.Equal(HttpStatusCode.Forbidden, unrelatedUserAdminManagerUpdate.StatusCode);
+            }
+
+            using var managerUpdate = await admin.PutAsJsonAsync(
+                $"/api/v1/admin/users/{unrelatedId}/reporting-manager",
+                new { managerUserId = administratorId });
+            Assert.Equal(HttpStatusCode.OK, managerUpdate.StatusCode);
+            using var cyclicManagerUpdate = await admin.PutAsJsonAsync(
+                $"/api/v1/admin/users/{subordinateId}/reporting-manager",
+                new { managerUserId = grandchildId });
+            Assert.Equal(HttpStatusCode.BadRequest, cyclicManagerUpdate.StatusCode);
+            using var otherAdministratorManagerUpdate = await admin.PutAsJsonAsync(
+                $"/api/v1/admin/users/{otherAdministratorId}/reporting-manager",
+                new { managerUserId = administratorId });
+            Assert.Equal(HttpStatusCode.Forbidden, otherAdministratorManagerUpdate.StatusCode);
+            using var otherAdministratorDisable = await admin.PostAsJsonAsync(
+                $"/api/v1/admin/users/{otherAdministratorId}/active",
+                new { active = false });
+            Assert.Equal(HttpStatusCode.Forbidden, otherAdministratorDisable.StatusCode);
+            using var otherAdministratorPasswordReset = await admin.PostAsJsonAsync(
+                $"/api/v1/admin/users/{otherAdministratorId}/password",
+                new { password = "temporary-password-never-used" });
+            Assert.Equal(HttpStatusCode.Forbidden, otherAdministratorPasswordReset.StatusCode);
+            using var administratorRoleGrant = await admin.PostAsJsonAsync(
+                "/api/v1/admin/user-roles",
+                new { userId = unrelatedId, roleId = administratorRoleId, validFrom = now.AddMinutes(-1), validTo = (DateTimeOffset?)null });
+            Assert.Equal(HttpStatusCode.Forbidden, administratorRoleGrant.StatusCode);
+            using var selfRoleGrant = await admin.PostAsJsonAsync(
+                "/api/v1/admin/user-roles",
+                new { userId = administratorId, roleId = operationsRoleId, validFrom = now.AddMinutes(-1), validTo = (DateTimeOffset?)null });
+            Assert.Equal(HttpStatusCode.Forbidden, selfRoleGrant.StatusCode);
+            using var administratorRoleRemoval = await admin.DeleteAsync(
+                $"/api/v1/admin/user-roles/{otherAdministratorRoleMembershipId}");
+            Assert.Equal(HttpStatusCode.Forbidden, administratorRoleRemoval.StatusCode);
+            using (var unrelated = api.ClientFor(unrelatedId))
+            using (var unauthorizedRoleGrant = await unrelated.PostAsJsonAsync(
+                       "/api/v1/admin/user-roles",
+                       new { userId = unrelatedId, roleId = administratorRoleId, validFrom = now.AddMinutes(-1), validTo = (DateTimeOffset?)null }))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, unauthorizedRoleGrant.StatusCode);
+            }
+
+            await using var verify = CreateTicketsDb();
+            var persistedAdmin = await verify.AdministrationUsers.SingleAsync(x => x.Id == administratorId);
+            var persistedSubordinate = await verify.AdministrationUsers.SingleAsync(x => x.Id == subordinateId);
+            Assert.Equal("Updated administrator", persistedAdmin.DisplayName);
+            Assert.Equal("+1-555-0101", persistedAdmin.Phone);
+            Assert.False(persistedAdmin.EmailVerified);
+            Assert.Null(persistedAdmin.ManagerUserId);
+            Assert.Equal("Updated subordinate", persistedSubordinate.DisplayName);
+            Assert.False(persistedSubordinate.EmailVerified);
+            Assert.Equal(administratorId, persistedSubordinate.ManagerUserId);
+            Assert.Equal(administratorId, (await verify.AdministrationUsers.SingleAsync(x => x.Id == unrelatedId)).ManagerUserId);
+            Assert.True(await verify.AdministrationUserRoles.AnyAsync(x => x.UserId == administratorId));
+            var profileAudit = await verify.Audits.AsNoTracking()
+                .Where(x => x.EntityType == "ADMINISTRATION" &&
+                            (x.EntityId == administratorId.ToString() || x.EntityId == subordinateId.ToString()) &&
+                            x.Action == "USER_PROFILE_UPDATED")
+                .ToListAsync();
+            Assert.Equal(2, profileAudit.Count);
+            Assert.Contains(profileAudit, x => x.ActorId == administratorId &&
+                x.EntityId == administratorId.ToString() &&
+                x.NewValue!.Contains("displayName", StringComparison.Ordinal) &&
+                x.OldValue!.Contains(adminEmail, StringComparison.Ordinal));
+            Assert.Contains(profileAudit, x => x.ActorId == administratorId &&
+                x.EntityId == subordinateId.ToString() &&
+                x.NewValue!.Contains("phone", StringComparison.Ordinal) &&
+                x.OldValue!.Contains(childEmail, StringComparison.Ordinal));
+            var hierarchyAudit = await verify.Audits.AsNoTracking()
+                .SingleAsync(x => x.ActorId == administratorId &&
+                                  x.EntityId == unrelatedId.ToString() &&
+                                  x.Action == "USER_REPORTING_MANAGER_CHANGED");
+            Assert.Contains(administratorId.ToString(), hierarchyAudit.NewValue!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await using var cleanup = CreateTicketsDb();
+            await cleanup.AdministrationUserRoles
+                .Where(x => x.Id == ordinaryAdminMembershipId)
+                .ExecuteDeleteAsync();
+            await cleanup.AdministrationRolePermissions
+                .Where(x => x.Id == ordinaryAdminRolePermissionId)
+                .ExecuteDeleteAsync();
+            await cleanup.AdministrationRoles
+                .Where(x => x.Id == ordinaryAdminRoleId)
+                .ExecuteDeleteAsync();
+            await cleanup.AdministrationUserRoles
+                .Where(x => x.UserId == administratorId || x.UserId == otherAdministratorId)
+                .ExecuteDeleteAsync();
+            await cleanup.AdministrationUsers
+                .Where(x => x.Id == grandchildId || x.Id == subordinateId || x.Id == unrelatedId ||
+                            x.Id == otherAdministratorId || x.Id == administratorId)
+                .ExecuteDeleteAsync();
+        }
+
+        static AdministrationUserRow ProfileUser(
+            long id,
+            string prefix,
+            string email,
+            long? managerUserId,
+            DateTimeOffset createdAt,
+            bool emailVerified = false) =>
+            new()
+            {
+                Id = id,
+                UserCode = $"{prefix}-{id}",
+                LoginName = $"{prefix}-{id}",
+                DisplayName = prefix,
+                Email = email,
+                EmailVerified = emailVerified,
+                ManagerUserId = managerUserId,
+                Active = true,
+                CreatedAt = createdAt,
+                CreatedBy = 0
+            };
+    }
+
     [Fact]
     public async Task Authenticated_http_pipeline_executes_workflow_and_enforces_auth_idempotency_and_concurrency()
     {
@@ -298,15 +785,22 @@ public sealed class PostgreSqlApiE2ETests
         try
         {
             var creator = api.ClientFor(9001);
-            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Request, Subject = $"API E2E {Guid.NewGuid():N}", Description = "api postgres workflow" });
+            var create = await PostWithIdempotencyAsync(creator, "/api/v1/tickets", $"api-{baseId}-ticket-create", new { Type = TicketType.Request, Subject = $"API E2E {Guid.NewGuid():N}", Description = "api postgres workflow" });
             Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
             var ticketId = await ReadLongAsync(create, "id");
             tracker.TicketIds.Add(ticketId);
 
             var classify = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/classify", new { ServiceId = 2001, CategoryId = 3001, RequestTypeId = 4001, PriorityId = 4 });
-            classify.EnsureSuccessStatusCode();
+            Assert.True(classify.IsSuccessStatusCode, $"Classification failed ({(int)classify.StatusCode}): {await classify.Content.ReadAsStringAsync()}{Environment.NewLine}{api.RecentProcessOutput}");
             var route = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/route", new { DepartmentId = 501, TeamId = 601 });
             route.EnsureSuccessStatusCode();
+
+            var approvalRequest = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/approval", new { ApproverUserId = 8100 });
+            Assert.True(approvalRequest.IsSuccessStatusCode, $"Approval request failed ({(int)approvalRequest.StatusCode}): {await approvalRequest.Content.ReadAsStringAsync()}");
+            var wrongApprover = await creator.PostAsync($"/api/v1/tickets/{ticketId}/approve", content: null);
+            Assert.Equal(HttpStatusCode.Conflict, wrongApprover.StatusCode);
+            var approved = await api.ClientFor(8100).PostAsync($"/api/v1/tickets/{ticketId}/approve", content: null);
+            Assert.True(approved.IsSuccessStatusCode, $"Designated approver failed ({(int)approved.StatusCode}): {await approved.Content.ReadAsStringAsync()}");
 
             await SeedWorkflowAsync(baseId, ticketId, tracker, hasDownstream: true);
 
@@ -354,12 +848,63 @@ public sealed class PostgreSqlApiE2ETests
             Assert.Equal("COMPLETED", workB.Status);
             Assert.Equal(1, await db.Audits.CountAsync(x => x.EntityType == "WORK_ITEM" && x.EntityId == workB.Id.ToString() && x.Action == "WORK_ITEM_COMPLETED"));
             Assert.True(await db.Events.AnyAsync(x => x.TicketId == ticketId && x.Type == "WORKFLOW_STEP_COMPLETED"));
+
+            await using var ticketDb = CreateTicketsDb();
+            var ticketRow = await ticketDb.Tickets.AsNoTracking().SingleAsync(x => x.Id == ticketId);
+            Assert.Equal(8100L, ticketRow.ApprovalApproverUserId);
+            Assert.Equal(1, ticketRow.Approved);
+            Assert.True(await ticketDb.Audits.AnyAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketId.ToString() && x.Action == "APPROVAL_APPROVED" && x.ActorId == 8100));
         }
         finally
         {
             await CleanupAsync(tracker);
         }
     }
+
+    public sealed class LocalAuthenticationFixtureFactAttribute : FactAttribute
+    {
+        public LocalAuthenticationFixtureFactAttribute()
+        {
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_LOGIN")) ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_PASSWORD")) ||
+                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_SIGNING_KEY")))
+            {
+                Skip = "Requires credentials supplied through the uncommitted local authentication fixture environment.";
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Local_login_rate_limits_repeated_failures_and_keeps_invalid_login_response_generic()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var api = await ApiHost.StartAsync(FindRepositoryRoot(), requireReady: false);
+        using var client = new HttpClient { BaseAddress = new Uri(api.BaseUrl) };
+        var loginName = $"missing-{Guid.NewGuid():N}";
+        var bodies = new List<string>();
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var response = await client.PostAsJsonAsync(
+                "/api/v1/auth/login",
+                new { loginName, password = "deliberately-wrong-password" });
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            var body = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(loginName, body, StringComparison.Ordinal);
+            bodies.Add(body);
+        }
+
+        Assert.All(bodies, body => Assert.Equal(bodies[0], body));
+
+        using var limited = await client.PostAsJsonAsync(
+            "/api/v1/auth/login",
+            new { loginName, password = "deliberately-wrong-password" });
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+        var limitedBody = await limited.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(loginName, limitedBody, StringComparison.Ordinal);
+        Assert.Contains("Too many sign-in attempts", limitedBody, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Approval_and_sla_http_pipeline_persists_history_and_enforces_authorization()
     {
@@ -373,13 +918,13 @@ public sealed class PostgreSqlApiE2ETests
         try
         {
             var creator = api.ClientFor(9001);
-            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Change, Subject = $"API approval SLA {Guid.NewGuid():N}", Description = "approval/sla api coverage" });
+            var create = await PostWithIdempotencyAsync(creator, "/api/v1/tickets", $"api-{baseId}-approval-ticket", new { Type = TicketType.Change, Subject = $"API approval SLA {Guid.NewGuid():N}", Description = "approval/sla api coverage" });
             Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
             var ticketId = await ReadLongAsync(create, "id");
             tracker.TicketIds.Add(ticketId);
 
             var selfApproval = await creator.PostAsJsonAsync($"/api/v1/tickets/{ticketId}/approval", new { ApproverUserId = 9001 });
-            Assert.Equal(HttpStatusCode.Conflict, selfApproval.StatusCode);
+            Assert.True(selfApproval.StatusCode == HttpStatusCode.Conflict, $"Expected Conflict but received {(int)selfApproval.StatusCode}: {await selfApproval.Content.ReadAsStringAsync()}{Environment.NewLine}{api.RecentProcessOutput}");
 
             var approvalOne = baseId + 701;
             var approvalTwo = baseId + 702;
@@ -411,6 +956,8 @@ public sealed class PostgreSqlApiE2ETests
             (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-pause-2", new { Operation = DurableSlaOperation.Pause, Reason = "WAITING_VENDOR" })).EnsureSuccessStatusCode();
             (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-resume-2", new { Operation = DurableSlaOperation.Resume, Reason = "VENDOR_RESPONDED" })).EnsureSuccessStatusCode();
             (await PostWithIdempotencyAsync(api.ClientFor(9001), $"/api/v1/slas/{slaId}/operations", $"api-{baseId}-sla-breach", new { Operation = DurableSlaOperation.Breach, Reason = "resolution elapsed" })).EnsureSuccessStatusCode();
+
+
 
             await using (var db = CreateExecutionDb())
             {
@@ -447,7 +994,7 @@ public sealed class PostgreSqlApiE2ETests
         try
         {
             var creator = api.ClientFor(9001);
-            var create = await creator.PostAsJsonAsync("/api/v1/tickets", new { Type = TicketType.Change, Subject = $"API durable approval {Guid.NewGuid():N}", Description = "durable approval orchestration" });
+            var create = await PostWithIdempotencyAsync(creator, "/api/v1/tickets", $"api-{baseId}-durable-ticket", new { Type = TicketType.Change, Subject = $"API durable approval {Guid.NewGuid():N}", Description = "durable approval orchestration" });
             Assert.True(create.IsSuccessStatusCode, await create.Content.ReadAsStringAsync());
             var ticketId = await ReadLongAsync(create, "id");
             tracker.TicketIds.Add(ticketId);
@@ -834,10 +1381,17 @@ public sealed class PostgreSqlApiE2ETests
     {
         private readonly Process _process;
         private readonly string _baseUrl;
+        private readonly ConcurrentQueue<string> _processOutput;
         public string BaseUrl => _baseUrl;
-        private ApiHost(Process process, string baseUrl) { _process = process; _baseUrl = baseUrl; }
+        public string RecentProcessOutput => string.Join(Environment.NewLine, _processOutput.ToArray().TakeLast(100));
+        private ApiHost(Process process, string baseUrl, ConcurrentQueue<string> processOutput) { _process = process; _baseUrl = baseUrl; _processOutput = processOutput; }
 
-        public static async Task<ApiHost> StartAsync(string root, bool useJwt = false, bool requireReady = true)
+        public static async Task<ApiHost> StartAsync(
+            string root,
+            bool useJwt = false,
+            bool requireReady = true,
+            bool useLocalJwt = false,
+            string? localSigningKey = null)
         {
             var port = Random.Shared.Next(23000, 28000);
             var url = $"http://127.0.0.1:{port}";
@@ -859,6 +1413,14 @@ public sealed class PostgreSqlApiE2ETests
                 start.Environment["Auth__Issuer"] = JwtTestIssuer;
                 start.Environment["Auth__Audience"] = JwtTestAudience;
             }
+            if (useLocalJwt)
+            {
+                start.Environment["Auth__Local__SigningKey"] = localSigningKey ??
+                    Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_SIGNING_KEY") ?? "";
+                start.Environment["Auth__Local__Issuer"] = LocalJwtTestIssuer;
+                start.Environment["Auth__Audience"] = LocalJwtTestAudience;
+                start.Environment["Auth__Local__TokenLifetimeMinutes"] = "15";
+            }
             start.Environment["Security__AssignmentActors__0"] = "9001";
             start.Environment["Security__AssignmentActors__1"] = "7150";
             start.Environment["Security__AssignmentActors__2"] = "7200";
@@ -876,13 +1438,19 @@ public sealed class PostgreSqlApiE2ETests
             start.Environment["WorkflowRouting__Rules__1__DepartmentId"] = "502";
             start.Environment["WorkflowRouting__Rules__1__TeamId"] = "602";
             start.Environment["WorkflowRouting__Rules__1__UserId"] = "7200";
-            var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start API process.");
-            var host = new ApiHost(process, url);
+            var processOutput = new ConcurrentQueue<string>();
+            var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, eventArgs) => CaptureProcessOutput(processOutput, eventArgs.Data);
+            process.ErrorDataReceived += (_, eventArgs) => CaptureProcessOutput(processOutput, eventArgs.Data);
+            if (!process.Start()) throw new InvalidOperationException("Could not start API process.");
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            var host = new ApiHost(process, url, processOutput);
             using var client = new HttpClient { BaseAddress = new Uri(url) };
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             while (!timeout.IsCancellationRequested)
             {
-                if (process.HasExited) throw new InvalidOperationException($"API host exited: {process.StandardError.ReadToEnd()}");
+                if (process.HasExited) throw new InvalidOperationException($"API host exited: {host.RecentProcessOutput}");
                 try { if ((await client.GetAsync(requireReady ? "/health" : "/health/live", timeout.Token)).IsSuccessStatusCode) return host; }
                 catch { await Task.Delay(250, timeout.Token); }
             }
@@ -903,7 +1471,20 @@ public sealed class PostgreSqlApiE2ETests
             await Task.CompletedTask;
             _process.Dispose();
         }
+
+        private static void CaptureProcessOutput(ConcurrentQueue<string> output, string? line)
+        {
+            if (line is null) return;
+            var safeLine = System.Text.RegularExpressions.Regex.Replace(
+                line,
+                @"(?i)(password|pwd)\s*=\s*[^;\s]+",
+                "$1=<redacted>");
+            safeLine = safeLine.Replace(JwtTestSigningKey, "<redacted-test-signing-key>", StringComparison.Ordinal);
+            var localSigningKey = Environment.GetEnvironmentVariable("PA_TICKETS_AUTH_FIXTURE_SIGNING_KEY");
+            if (!string.IsNullOrEmpty(localSigningKey))
+                safeLine = safeLine.Replace(localSigningKey, "<redacted-local-signing-key>", StringComparison.Ordinal);
+            output.Enqueue(safeLine);
+            while (output.Count > 100) output.TryDequeue(out _);
+        }
     }
 }
-
-

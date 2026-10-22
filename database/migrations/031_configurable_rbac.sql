@@ -1,0 +1,416 @@
+-- PA TICKETS additive Oracle migration 031:
+-- configurable permission metadata, effective grants, and explicit membership scopes.
+-- Oracle commits DDL implicitly; run in a reviewed maintenance window and retain a backup.
+-- This migration preserves existing role/user IDs, memberships, mappings, and audit rows.
+
+DECLARE
+    v_count NUMBER;
+    PROCEDURE add_column_if_missing(p_table VARCHAR2, p_column VARCHAR2, p_definition VARCHAR2) IS
+        v_columns NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO v_columns
+          FROM USER_TAB_COLUMNS
+         WHERE TABLE_NAME = UPPER(p_table) AND COLUMN_NAME = UPPER(p_column);
+        IF v_columns = 0 THEN
+            EXECUTE IMMEDIATE 'ALTER TABLE ' || p_table || ' ADD (' || p_column || ' ' || p_definition || ')';
+        END IF;
+    END;
+    PROCEDURE create_sequence_if_missing(p_name VARCHAR2) IS
+        v_sequences NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO v_sequences
+          FROM USER_SEQUENCES
+         WHERE SEQUENCE_NAME = UPPER(p_name);
+        IF v_sequences = 0 THEN
+            EXECUTE IMMEDIATE 'CREATE SEQUENCE ' || p_name || ' START WITH 1 INCREMENT BY 1 NOCACHE';
+        END IF;
+    END;
+BEGIN
+    SELECT COUNT(*) INTO v_count
+      FROM (SELECT UPPER(S_ROLE_CODE) FROM PA_TICKETS_ROLE GROUP BY UPPER(S_ROLE_CODE) HAVING COUNT(*) > 1);
+    IF v_count > 0 THEN
+        RAISE_APPLICATION_ERROR(-20032, 'RBAC migration blocked: role codes differ only by case');
+    END IF;
+    SELECT COUNT(*) INTO v_count
+      FROM (SELECT UPPER(S_PERMISSION_CODE) FROM PA_TICKETS_PERMISSION GROUP BY UPPER(S_PERMISSION_CODE) HAVING COUNT(*) > 1);
+    IF v_count > 0 THEN
+        RAISE_APPLICATION_ERROR(-20033, 'RBAC migration blocked: permission codes differ only by case');
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM PA_TICKETS_ROLE
+     WHERE S_ROLE_CODE <> UPPER(S_ROLE_CODE)
+        OR (
+            REGEXP_REPLACE(UPPER(S_ROLE_CODE), '[^A-Z0-9]', '') IN
+                ('USER','ADMIN','SUPERADMIN','ADMINHEAD','SPECTATOR')
+            AND S_ROLE_CODE NOT IN ('USER','ADMIN','SUPER_ADMIN','ADMIN_HEAD','SPECTATOR')
+        );
+    IF v_count > 0 THEN
+        RAISE_APPLICATION_ERROR(-20034, 'RBAC migration blocked: non-canonical or reserved role alias exists');
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM PA_TICKETS_PERMISSION
+     WHERE S_PERMISSION_CODE <> UPPER(S_PERMISSION_CODE);
+    IF v_count > 0 THEN
+        RAISE_APPLICATION_ERROR(-20035, 'RBAC migration blocked: non-canonical permission code exists');
+    END IF;
+
+    create_sequence_if_missing('PA_TICKETS_ROLE_SCOPE_SEQ');
+    create_sequence_if_missing('PA_TICKETS_ADMIN_DELEGATION_SEQ');
+
+    add_column_if_missing('PA_TICKETS_PERMISSION', 'S_MODULE_CODE', 'VARCHAR2(80)');
+    add_column_if_missing('PA_TICKETS_PERMISSION', 'S_ACTION_CODE', 'VARCHAR2(50)');
+    add_column_if_missing('PA_TICKETS_PERMISSION', 'S_SCOPE_CLASS', 'VARCHAR2(30)');
+    add_column_if_missing('PA_TICKETS_PERMISSION', 'S_SECURITY_CLASS', 'VARCHAR2(40)');
+    add_column_if_missing('PA_TICKETS_PERMISSION', 'N_READ_ONLY', 'NUMBER(1) DEFAULT 0 NOT NULL');
+    UPDATE PA_TICKETS_PERMISSION SET N_READ_ONLY = NVL(N_READ_ONLY, 0) WHERE N_READ_ONLY IS NULL;
+    EXECUTE IMMEDIATE 'ALTER TABLE PA_TICKETS_PERMISSION MODIFY (N_READ_ONLY DEFAULT 0 NOT NULL)';
+
+    add_column_if_missing('PA_TICKETS_ROLE_PERMISSION', 'D_VALID_FROM', 'TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL');
+    add_column_if_missing('PA_TICKETS_ROLE_PERMISSION', 'D_VALID_TO', 'TIMESTAMP WITH TIME ZONE');
+    add_column_if_missing('PA_TICKETS_ROLE_PERMISSION', 'N_ACTIVE', 'NUMBER(1) DEFAULT 1 NOT NULL');
+    add_column_if_missing('PA_TICKETS_ROLE_PERMISSION', 'D_UPDATED_AT', 'TIMESTAMP WITH TIME ZONE');
+    add_column_if_missing('PA_TICKETS_ROLE_PERMISSION', 'N_UPDATED_BY', 'NUMBER(18) DEFAULT 0 NOT NULL');
+    UPDATE PA_TICKETS_ROLE_PERMISSION
+       SET D_VALID_FROM = COALESCE(D_VALID_FROM, D_CREATED_AT, SYSTIMESTAMP),
+           N_ACTIVE = NVL(N_ACTIVE, 1),
+           N_UPDATED_BY = NVL(N_UPDATED_BY, 0);
+    UPDATE PA_TICKETS_ROLE_PERMISSION
+       SET D_UPDATED_AT = COALESCE(D_UPDATED_AT, D_VALID_FROM, D_CREATED_AT, SYSTIMESTAMP);
+    EXECUTE IMMEDIATE 'ALTER TABLE PA_TICKETS_ROLE_PERMISSION MODIFY (D_VALID_FROM NOT NULL, N_ACTIVE DEFAULT 1 NOT NULL, N_UPDATED_BY DEFAULT 0 NOT NULL)';
+    SELECT COUNT(*) INTO v_count FROM USER_CONSTRAINTS
+     WHERE TABLE_NAME = 'PA_TICKETS_ROLE_PERMISSION' AND CONSTRAINT_NAME = 'CK_PA_TICKETS_RP_DATES';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'ALTER TABLE PA_TICKETS_ROLE_PERMISSION ADD CONSTRAINT CK_PA_TICKETS_RP_DATES CHECK (D_VALID_TO IS NULL OR D_VALID_TO > D_VALID_FROM)';
+    END IF;
+
+    SELECT COUNT(*) INTO v_count FROM USER_CONSTRAINTS
+     WHERE TABLE_NAME = 'PA_TICKETS_ROLE_PERMISSION' AND CONSTRAINT_NAME = 'UK_PA_TICKETS_RP';
+    IF v_count > 0 THEN
+        EXECUTE IMMEDIATE 'ALTER TABLE PA_TICKETS_ROLE_PERMISSION DROP CONSTRAINT UK_PA_TICKETS_RP';
+    END IF;
+
+    SELECT COUNT(*) INTO v_count FROM USER_TABLES WHERE TABLE_NAME = 'PA_TICKETS_USER_ROLE_SCOPE';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE q'[
+            CREATE TABLE PA_TICKETS_USER_ROLE_SCOPE (
+                N_ROLE_SCOPE_ID NUMBER(18) NOT NULL,
+                N_USER_ROLE_ID NUMBER(18) NOT NULL,
+                S_SCOPE_TYPE VARCHAR2(30) NOT NULL,
+                N_ORGANIZATION_ID NUMBER(18),
+                N_DEPARTMENT_ID NUMBER(18),
+                N_TEAM_ID NUMBER(18),
+                N_CLIENT_ID NUMBER(18),
+                S_RESOURCE_TYPE VARCHAR2(100),
+                S_RESOURCE_ID VARCHAR2(300),
+                D_VALID_FROM TIMESTAMP WITH TIME ZONE NOT NULL,
+                D_VALID_TO TIMESTAMP WITH TIME ZONE,
+                N_ACTIVE NUMBER(1) DEFAULT 1 NOT NULL,
+                D_CREATED_AT TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+                N_CREATED_BY NUMBER(18) NOT NULL,
+                CONSTRAINT PK_PA_TICKETS_ROLE_SCOPE PRIMARY KEY (N_ROLE_SCOPE_ID),
+                CONSTRAINT FK_PA_TICKETS_RSC_USER_ROLE FOREIGN KEY (N_USER_ROLE_ID)
+                    REFERENCES PA_TICKETS_USER_ROLE (N_USER_ROLE_ID),
+                CONSTRAINT FK_PA_TICKETS_RSC_DEPARTMENT FOREIGN KEY (N_DEPARTMENT_ID)
+                    REFERENCES PA_TICKETS_DEPARTMENT (N_DEPARTMENT_ID),
+                CONSTRAINT FK_PA_TICKETS_RSC_TEAM FOREIGN KEY (N_TEAM_ID)
+                    REFERENCES PA_TICKETS_TEAM (N_TEAM_ID),
+                CONSTRAINT FK_PA_TICKETS_RSC_CLIENT FOREIGN KEY (N_CLIENT_ID)
+                    REFERENCES PA_TICKETS_CLIENT (N_CLIENT_ID),
+                CONSTRAINT CK_PA_TICKETS_RSC_TYPE CHECK
+                    (S_SCOPE_TYPE IN ('ORGANIZATION','DEPARTMENT','TEAM','CLIENT','ADMIN_GROUP','RECORD')),
+                CONSTRAINT CK_PA_TICKETS_RSC_DATES CHECK
+                    (D_VALID_TO IS NULL OR D_VALID_TO > D_VALID_FROM),
+                CONSTRAINT CK_PA_TICKETS_RSC_ACTIVE CHECK (N_ACTIVE IN (0,1))
+            )
+        ]';
+    END IF;
+
+    SELECT COUNT(*) INTO v_count FROM USER_TABLES WHERE TABLE_NAME = 'PA_TICKETS_ADMIN_HEAD_DELEGATION';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE q'[
+            CREATE TABLE PA_TICKETS_ADMIN_HEAD_DELEGATION (
+                N_ADMIN_DELEGATION_ID NUMBER(18) NOT NULL,
+                N_ADMIN_HEAD_USER_ID NUMBER(18) NOT NULL,
+                N_ADMIN_USER_ID NUMBER(18) NOT NULL,
+                D_VALID_FROM TIMESTAMP WITH TIME ZONE NOT NULL,
+                D_VALID_TO TIMESTAMP WITH TIME ZONE,
+                N_ACTIVE NUMBER(1) DEFAULT 1 NOT NULL,
+                D_CREATED_AT TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+                N_CREATED_BY NUMBER(18) NOT NULL,
+                CONSTRAINT PK_PA_TICKETS_ADMIN_DELEG PRIMARY KEY (N_ADMIN_DELEGATION_ID),
+                CONSTRAINT FK_PA_TICKETS_AHD_HEAD FOREIGN KEY (N_ADMIN_HEAD_USER_ID)
+                    REFERENCES PA_TICKETS_USER (N_USER_ID),
+                CONSTRAINT FK_PA_TICKETS_AHD_ADMIN FOREIGN KEY (N_ADMIN_USER_ID)
+                    REFERENCES PA_TICKETS_USER (N_USER_ID),
+                CONSTRAINT CK_PA_TICKETS_AHD_ACTIVE CHECK (N_ACTIVE IN (0,1)),
+                CONSTRAINT CK_PA_TICKETS_AHD_DATES CHECK (D_VALID_TO IS NULL OR D_VALID_TO > D_VALID_FROM),
+                CONSTRAINT UK_PA_TICKETS_AHD_START UNIQUE (N_ADMIN_HEAD_USER_ID,N_ADMIN_USER_ID,D_VALID_FROM)
+            )
+        ]';
+    END IF;
+END;
+/
+
+DECLARE
+    v_role_id NUMBER;
+    v_role_code VARCHAR2(100);
+    v_system_role NUMBER;
+    v_active NUMBER;
+    v_permission_id NUMBER;
+    v_generated_id NUMBER;
+    v_count NUMBER;
+    PROCEDURE add_role(p_code VARCHAR2, p_name VARCHAR2, p_description VARCHAR2) IS
+    BEGIN
+        BEGIN
+            SELECT N_ROLE_ID, S_ROLE_CODE, N_SYSTEM_ROLE, N_ACTIVE
+              INTO v_role_id, v_role_code, v_system_role, v_active
+              FROM PA_TICKETS_ROLE
+             WHERE UPPER(S_ROLE_CODE) = p_code;
+            IF v_role_code <> p_code THEN
+                RAISE_APPLICATION_ERROR(-20036, 'Existing role code is not canonical: ' || p_code);
+            END IF;
+            IF v_system_role <> 1 OR v_active <> 1 THEN
+                RAISE_APPLICATION_ERROR(-20031, 'Existing role code conflicts with protected built-in identity: ' || p_code);
+            END IF;
+        EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+                LOOP
+                    v_role_id := PA_TICKETS_ROLE_SEQ.NEXTVAL;
+                    SELECT COUNT(*) INTO v_count FROM PA_TICKETS_ROLE WHERE N_ROLE_ID = v_role_id;
+                    EXIT WHEN v_count = 0;
+                END LOOP;
+                INSERT INTO PA_TICKETS_ROLE
+                    (N_ROLE_ID,S_ROLE_CODE,S_ROLE_NAME,S_DESCRIPTION,N_SYSTEM_ROLE,N_ACTIVE,N_CREATED_BY)
+                VALUES
+                    (v_role_id,p_code,p_name,p_description,1,1,0);
+        END;
+    END;
+BEGIN
+    add_role('USER', 'User', 'Standard ticket operations within assigned scope.');
+    add_role('ADMIN', 'Admin', 'Department-scoped administration.');
+    add_role('SUPER_ADMIN', 'Super Admin', 'Organization-wide administrative authority.');
+    add_role('ADMIN_HEAD', 'Admin Head', 'Admin capabilities and explicitly delegated Admin management.');
+    add_role('SPECTATOR', 'Spectator', 'Read-only access within assigned scope.');
+
+    FOR p IN (
+        SELECT 'APPROVAL_ADMIN' code,'Administer approvals' name,'APPROVALS' module_code,'MANAGE' action_code,'DEPARTMENT' scope_class,'DEPARTMENT_ADMIN' security_class,0 read_only FROM DUAL UNION ALL
+        SELECT 'APPROVAL_PUBLISH','Publish approval rules','APPROVALS','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'APPROVAL_READ','View approvals','APPROVALS','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'AUDIT_EXPORT','Export audit records','AUDIT','EXPORT','RECORD','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'AUDITOR_VIEW','View audit records','AUDIT','VIEW','RECORD','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'CATALOGUE_PUBLISH','Publish catalogue configuration','CATALOGUE','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'CATEGORY_ADMIN','Administer categories','CATALOGUE','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'CATEGORY_READ','View categories','CATALOGUE','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'CLIENT_ADMIN','Administer client access','CLIENTS','MANAGE','DEPARTMENT','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'COMMUNICATION_ADMIN','Administer communications','COMMUNICATIONS','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'COMMUNICATION_PUBLISH','Publish communication templates','COMMUNICATIONS','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'COMMUNICATION_READ','View communications','COMMUNICATIONS','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'COMMUNICATION_RETIRE','Retire communication templates','COMMUNICATIONS','RETIRE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'CONFIG_ADMIN','Administer protected configuration','CONFIGURATION','MANAGE','ORGANIZATION','SECURITY_GOVERNANCE',0 FROM DUAL UNION ALL
+        SELECT 'NOTIFICATION_ADMIN','Administer notifications','NOTIFICATIONS','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'NOTIFICATION_PUBLISH','Publish notification rules','NOTIFICATIONS','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'NOTIFICATION_READ','View notifications','NOTIFICATIONS','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'NOTIFICATION_RETIRE','Retire notification rules','NOTIFICATIONS','RETIRE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'REQUEST_TYPE_ADMIN','Administer request types','CATALOGUE','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'REQUEST_TYPE_READ','View request types','CATALOGUE','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'ROLE_ADMIN','Assign standard roles','SECURITY','ASSIGN','DEPARTMENT','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'ROLE_PERMISSION_ADMIN','Configure role permissions','SECURITY','CONFIGURE','ORGANIZATION','SECURITY_GOVERNANCE',0 FROM DUAL UNION ALL
+        SELECT 'ROLE_SCOPE_ADMIN','Configure role scopes','SECURITY','SCOPE','ORGANIZATION','SECURITY_GOVERNANCE',0 FROM DUAL UNION ALL
+        SELECT 'SERVICE_ADMIN','Administer services','CATALOGUE','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'SERVICE_READ','View services','CATALOGUE','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'SLA_ADMIN','Administer SLA policies','SLA','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'SLA_PUBLISH','Publish SLA policies','SLA','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'SLA_READ','View SLA policies','SLA','VIEW','NONE','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'SLA_RETIRE','Retire SLA policies','SLA','RETIRE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'TICKET_ADMIN','Administer ticket status and priority','TICKETS','CONFIGURE','DEPARTMENT','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'TICKET_READ','View tickets','TICKETS','VIEW','RECORD','READ_ONLY',1 FROM DUAL UNION ALL
+        SELECT 'TICKET_UPDATE','Update tickets','TICKETS','EDIT','RECORD','BUSINESS',0 FROM DUAL UNION ALL
+        SELECT 'USER_ADMIN','Administer users within scope','USERS','MANAGE','DEPARTMENT','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'WORKFLOW_ADMIN','Administer workflows','WORKFLOWS','MANAGE','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'WORKFLOW_PUBLISH','Publish workflows','WORKFLOWS','PUBLISH','ORGANIZATION','DEPARTMENT_ADMIN',0 FROM DUAL UNION ALL
+        SELECT 'WORKFLOW_READ','View workflows','WORKFLOWS','VIEW','NONE','READ_ONLY',1 FROM DUAL
+    ) LOOP
+        BEGIN
+            SELECT N_PERMISSION_ID INTO v_permission_id
+              FROM PA_TICKETS_PERMISSION
+             WHERE S_PERMISSION_CODE = p.code;
+            UPDATE PA_TICKETS_PERMISSION
+               SET S_MODULE_CODE = p.module_code,
+                   S_ACTION_CODE = p.action_code,
+                   S_SCOPE_CLASS = p.scope_class,
+                   S_SECURITY_CLASS = p.security_class,
+                   N_READ_ONLY = p.read_only
+             WHERE N_PERMISSION_ID = v_permission_id;
+        EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+                LOOP
+                    v_permission_id := PA_TICKETS_PERMISSION_SEQ.NEXTVAL;
+                    SELECT COUNT(*) INTO v_count FROM PA_TICKETS_PERMISSION WHERE N_PERMISSION_ID = v_permission_id;
+                    EXIT WHEN v_count = 0;
+                END LOOP;
+                INSERT INTO PA_TICKETS_PERMISSION
+                    (N_PERMISSION_ID,S_PERMISSION_CODE,S_PERMISSION_NAME,S_DESCRIPTION,S_MODULE_CODE,
+                     S_ACTION_CODE,S_SCOPE_CLASS,S_SECURITY_CLASS,N_READ_ONLY,N_ACTIVE,N_CREATED_BY)
+                VALUES
+                    (v_permission_id,p.code,p.name,p.name,p.module_code,p.action_code,p.scope_class,
+                     p.security_class,p.read_only,1,0);
+        END;
+    END LOOP;
+
+    FOR g IN (
+        SELECT r.N_ROLE_ID, p.N_PERMISSION_ID
+          FROM PA_TICKETS_ROLE r
+          JOIN PA_TICKETS_PERMISSION p
+            ON (r.S_ROLE_CODE = 'SUPER_ADMIN' AND p.N_ACTIVE = 1)
+            OR (r.S_ROLE_CODE IN ('ADMIN','ADMIN_HEAD') AND p.S_PERMISSION_CODE IN
+                ('TICKET_READ','TICKET_UPDATE','USER_ADMIN','ROLE_ADMIN'))
+            OR (r.S_ROLE_CODE = 'USER' AND p.S_PERMISSION_CODE IN ('TICKET_READ','TICKET_UPDATE'))
+            OR (r.S_ROLE_CODE = 'SPECTATOR' AND p.N_READ_ONLY = 1)
+         WHERE NOT EXISTS (
+             SELECT 1 FROM PA_TICKETS_ROLE_PERMISSION rp
+              WHERE rp.N_ROLE_ID = r.N_ROLE_ID AND rp.N_PERMISSION_ID = p.N_PERMISSION_ID)
+    ) LOOP
+        LOOP
+            v_generated_id := PA_TICKETS_ROLE_PERMISSION_SEQ.NEXTVAL;
+            SELECT COUNT(*) INTO v_count FROM PA_TICKETS_ROLE_PERMISSION WHERE N_ROLE_PERMISSION_ID = v_generated_id;
+            EXIT WHEN v_count = 0;
+        END LOOP;
+        INSERT INTO PA_TICKETS_ROLE_PERMISSION
+            (N_ROLE_PERMISSION_ID,N_ROLE_ID,N_PERMISSION_ID,D_CREATED_AT,N_CREATED_BY,
+             D_VALID_FROM,N_ACTIVE,D_UPDATED_AT,N_UPDATED_BY)
+        VALUES
+            (v_generated_id,g.N_ROLE_ID,g.N_PERMISSION_ID,SYSTIMESTAMP,0,
+             SYSTIMESTAMP,1,SYSTIMESTAMP,0);
+    END LOOP;
+END;
+/
+
+DECLARE
+    v_scope_id NUMBER;
+    v_count NUMBER;
+    PROCEDURE add_scope(
+        p_user_role_id NUMBER,
+        p_scope_type VARCHAR2,
+        p_department_id NUMBER,
+        p_team_id NUMBER,
+        p_valid_from TIMESTAMP WITH TIME ZONE,
+        p_valid_to TIMESTAMP WITH TIME ZONE,
+        p_active NUMBER,
+        p_created_by NUMBER) IS
+    BEGIN
+        SELECT COUNT(*) INTO v_count
+          FROM PA_TICKETS_USER_ROLE_SCOPE
+         WHERE N_USER_ROLE_ID = p_user_role_id
+           AND S_SCOPE_TYPE = p_scope_type
+           AND NVL(N_DEPARTMENT_ID, -1) = NVL(p_department_id, -1)
+           AND NVL(N_TEAM_ID, -1) = NVL(p_team_id, -1)
+           AND (D_VALID_FROM = p_valid_from
+                OR (N_ACTIVE = 1
+                    AND D_VALID_FROM <= SYSTIMESTAMP
+                    AND (D_VALID_TO IS NULL OR D_VALID_TO > SYSTIMESTAMP)));
+        IF v_count = 0 THEN
+            LOOP
+                v_scope_id := PA_TICKETS_ROLE_SCOPE_SEQ.NEXTVAL;
+                SELECT COUNT(*) INTO v_count FROM PA_TICKETS_USER_ROLE_SCOPE WHERE N_ROLE_SCOPE_ID = v_scope_id;
+                EXIT WHEN v_count = 0;
+            END LOOP;
+            INSERT INTO PA_TICKETS_USER_ROLE_SCOPE
+                (N_ROLE_SCOPE_ID,N_USER_ROLE_ID,S_SCOPE_TYPE,N_DEPARTMENT_ID,N_TEAM_ID,
+                 D_VALID_FROM,D_VALID_TO,N_ACTIVE,D_CREATED_AT,N_CREATED_BY)
+            VALUES
+                (v_scope_id,p_user_role_id,p_scope_type,p_department_id,p_team_id,
+                 p_valid_from,p_valid_to,p_active,SYSTIMESTAMP,NVL(p_created_by,0));
+        END IF;
+    END;
+BEGIN
+    FOR s IN (
+        SELECT m.N_USER_ROLE_ID, r.S_ROLE_CODE, u.N_DEPARTMENT_ID, u.N_TEAM_ID,
+               GREATEST(m.D_VALID_FROM, SYSTIMESTAMP) D_VALID_FROM,
+               m.D_VALID_TO, m.N_ACTIVE, m.N_CREATED_BY
+          FROM PA_TICKETS_USER_ROLE m
+          JOIN PA_TICKETS_ROLE r ON r.N_ROLE_ID = m.N_ROLE_ID
+          JOIN PA_TICKETS_USER u ON u.N_USER_ID = m.N_USER_ID
+         WHERE r.S_ROLE_CODE IN ('ADMIN','ADMIN_HEAD')
+           AND m.N_ACTIVE = 1
+           AND (m.D_VALID_TO IS NULL OR m.D_VALID_TO > SYSTIMESTAMP)
+           AND u.N_DEPARTMENT_ID IS NOT NULL
+    ) LOOP
+        add_scope(s.N_USER_ROLE_ID,'DEPARTMENT',s.N_DEPARTMENT_ID,NULL,s.D_VALID_FROM,s.D_VALID_TO,s.N_ACTIVE,s.N_CREATED_BY);
+    END LOOP;
+    FOR s IN (
+        SELECT m.N_USER_ROLE_ID, u.N_DEPARTMENT_ID, u.N_TEAM_ID,
+               GREATEST(m.D_VALID_FROM, SYSTIMESTAMP) D_VALID_FROM,
+               m.D_VALID_TO, m.N_ACTIVE, m.N_CREATED_BY
+          FROM PA_TICKETS_USER_ROLE m
+          JOIN PA_TICKETS_ROLE r ON r.N_ROLE_ID = m.N_ROLE_ID
+          JOIN PA_TICKETS_USER u ON u.N_USER_ID = m.N_USER_ID
+         WHERE r.S_ROLE_CODE IN ('USER','SPECTATOR','OPERATIONS','ADMINISTRATOR','AUDITOR')
+           AND m.N_ACTIVE = 1
+           AND (m.D_VALID_TO IS NULL OR m.D_VALID_TO > SYSTIMESTAMP)
+           AND u.N_DEPARTMENT_ID IS NOT NULL AND u.N_TEAM_ID IS NOT NULL
+    ) LOOP
+        add_scope(s.N_USER_ROLE_ID,'TEAM',s.N_DEPARTMENT_ID,s.N_TEAM_ID,s.D_VALID_FROM,s.D_VALID_TO,s.N_ACTIVE,s.N_CREATED_BY);
+    END LOOP;
+    FOR s IN (
+        SELECT m.N_USER_ROLE_ID, u.N_DEPARTMENT_ID,
+               GREATEST(m.D_VALID_FROM, SYSTIMESTAMP) D_VALID_FROM,
+               m.D_VALID_TO, m.N_ACTIVE, m.N_CREATED_BY
+          FROM PA_TICKETS_USER_ROLE m
+          JOIN PA_TICKETS_ROLE r ON r.N_ROLE_ID = m.N_ROLE_ID
+          JOIN PA_TICKETS_USER u ON u.N_USER_ID = m.N_USER_ID
+         WHERE r.S_ROLE_CODE IN ('USER','SPECTATOR','OPERATIONS','ADMINISTRATOR','AUDITOR')
+           AND m.N_ACTIVE = 1
+           AND (m.D_VALID_TO IS NULL OR m.D_VALID_TO > SYSTIMESTAMP)
+           AND u.N_DEPARTMENT_ID IS NOT NULL AND u.N_TEAM_ID IS NULL
+    ) LOOP
+        add_scope(s.N_USER_ROLE_ID,'DEPARTMENT',s.N_DEPARTMENT_ID,NULL,s.D_VALID_FROM,s.D_VALID_TO,s.N_ACTIVE,s.N_CREATED_BY);
+    END LOOP;
+    FOR s IN (
+        SELECT m.N_USER_ROLE_ID, GREATEST(m.D_VALID_FROM, SYSTIMESTAMP) D_VALID_FROM,
+               m.D_VALID_TO, m.N_ACTIVE, m.N_CREATED_BY
+          FROM PA_TICKETS_USER_ROLE m
+          JOIN PA_TICKETS_ROLE r ON r.N_ROLE_ID = m.N_ROLE_ID
+         WHERE r.S_ROLE_CODE = 'ADMIN_HEAD'
+           AND m.N_ACTIVE = 1
+           AND (m.D_VALID_TO IS NULL OR m.D_VALID_TO > SYSTIMESTAMP)
+    ) LOOP
+        add_scope(s.N_USER_ROLE_ID,'ADMIN_GROUP',NULL,NULL,s.D_VALID_FROM,s.D_VALID_TO,s.N_ACTIVE,s.N_CREATED_BY);
+    END LOOP;
+END;
+/
+
+DECLARE
+    v_count NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'UX_PT_ROLE_CODE_CI';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX UX_PT_ROLE_CODE_CI ON PA_TICKETS_ROLE (UPPER(S_ROLE_CODE))';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'UX_PT_PERMISSION_CODE_CI';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX UX_PT_PERMISSION_CODE_CI ON PA_TICKETS_PERMISSION (UPPER(S_PERMISSION_CODE))';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'UK_PA_TICKETS_RP_ACTIVE';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE q'[
+            CREATE UNIQUE INDEX UK_PA_TICKETS_RP_ACTIVE
+                ON PA_TICKETS_ROLE_PERMISSION (
+                    CASE WHEN N_ACTIVE = 1 THEN N_ROLE_ID END,
+                    CASE WHEN N_ACTIVE = 1 THEN N_PERMISSION_ID END
+                )
+        ]';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'IX_PA_TICKETS_RP_EFFECTIVE';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE INDEX IX_PA_TICKETS_RP_EFFECTIVE ON PA_TICKETS_ROLE_PERMISSION (N_ROLE_ID,N_ACTIVE,D_VALID_FROM,D_VALID_TO)';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'IX_PA_TICKETS_RSC_EFFECTIVE';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE INDEX IX_PA_TICKETS_RSC_EFFECTIVE ON PA_TICKETS_USER_ROLE_SCOPE (N_USER_ROLE_ID,S_SCOPE_TYPE,N_ACTIVE,D_VALID_FROM,D_VALID_TO)';
+    END IF;
+    SELECT COUNT(*) INTO v_count FROM USER_INDEXES WHERE INDEX_NAME = 'IX_PA_TICKETS_AHD_EFFECTIVE';
+    IF v_count = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE INDEX IX_PA_TICKETS_AHD_EFFECTIVE ON PA_TICKETS_ADMIN_HEAD_DELEGATION (N_ADMIN_HEAD_USER_ID,N_ADMIN_USER_ID,N_ACTIVE,D_VALID_FROM,D_VALID_TO)';
+    END IF;
+END;
+/
+
+COMMIT;

@@ -1,14 +1,28 @@
 ﻿import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
-import { AuthIntegrationGapError, AuthService } from './auth.service';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { AuthService } from './auth.service';
 
 describe('AuthService', () => {
-  beforeEach(() => TestBed.configureTestingModule({ providers: [AuthService] }));
+  let http: HttpTestingController;
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), AuthService] });
+    http = TestBed.inject(HttpTestingController);
+  });
+  afterEach(() => http.verify());
 
-  it('reports the real backend login integration gap without sending credentials', async () => {
+  it('posts credentials to the regular-auth endpoint and holds the returned token in memory', () => {
     const service = TestBed.inject(AuthService);
-    await expect(firstValueFrom(service.login('user@example.com', 'password123'))).rejects.toBeInstanceOf(AuthIntegrationGapError);
-    expect(service.isAuthenticated()).toBe(false);
+    service.login('agent', 'sample-password').subscribe(response => {
+      expect(response.tokenType).toBe('Bearer');
+      expect(service.isAuthenticated()).toBe(true);
+      expect(service.session()?.subject).toBe('42');
+    });
+    const request = http.expectOne('http://localhost:5018/api/v1/auth/login');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ loginName: 'agent', password: 'sample-password' });
+    request.flush({ accessToken: `${btoa('{}')}.${btoa(JSON.stringify({ sub: '42', exp: Math.floor(Date.now() / 1000) + 300 }))}.signature`, tokenType: 'Bearer', expiresIn: 300, userId: 42, loginName: 'agent', displayName: 'Test Agent' });
   });
 
   it('treats an expired bearer session as unauthenticated without persistence', () => {
@@ -27,7 +41,13 @@ describe('AuthService', () => {
     service.logout();
     expect(service.session()).toBeNull();
   });
+
+  it('does not treat role names as permission grants', () => {
+    const service = TestBed.inject(AuthService);
+    const payload = btoa(JSON.stringify({ sub: '42', roles: ['SUPER_ADMIN'] }));
+    service.setBearerToken(`${btoa('{}')}.${payload}.signature`);
+    expect(service.hasRole('SUPER_ADMIN')).toBe(true);
+    expect(service.hasPermission('TICKET_READ')).toBe(false);
+  });
 });
-
-
 

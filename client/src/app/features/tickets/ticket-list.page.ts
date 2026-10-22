@@ -1,4 +1,4 @@
-import { Component, DestroyRef, OnInit, inject } from '@angular/core';
+import { ChangeDetectorRef, Component, DestroyRef, OnInit, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
@@ -6,14 +6,17 @@ import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
 import { finalize, of } from 'rxjs';
 import { TicketsApiService, TicketSearchFilters, TicketSearchPage } from '../../core/tickets-api.service';
 import { StatusPanelComponent } from '../../shared/status-panel.component';
+import { AuthService } from '../../core/auth/auth.service';
 
 @Component({ selector: 'app-ticket-list', standalone: true, imports: [ReactiveFormsModule, RouterLink, StatusPanelComponent], templateUrl: './ticket-list.html', styleUrl: './ticket-list.scss' })
 export class TicketListPage implements OnInit {
   private readonly formBuilder = inject(FormBuilder);
   private readonly api = inject(TicketsApiService);
+  readonly auth = inject(AuthService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly changeDetector = inject(ChangeDetectorRef);
   private suppressRouteRefresh = false;
   readonly filters = this.formBuilder.nonNullable.group({ number: [''], status: [''], type: [''], createdFrom: [''], createdTo: [''] });
   result: TicketSearchPage | null = null;
@@ -32,6 +35,7 @@ export class TicketListPage implements OnInit {
       this.filters.patchValue({ number: query.get('number') ?? '', status: query.get('status') ?? '', type: query.get('type') ?? '', createdFrom: query.get('createdFrom') ?? '', createdTo: query.get('createdTo') ?? '' });
       const parsedPage = Number(query.get('page'));
       this.page = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+      this.changeDetector.markForCheck();
       this.load();
     });
   }
@@ -41,7 +45,7 @@ export class TicketListPage implements OnInit {
     return { number: raw.number || null, status: raw.status || null, type: raw.type || null, createdFrom: raw.createdFrom || null, createdTo: raw.createdTo || null, page: this.page > 1 ? this.page : null };
   }
 
-  load(): void { this.loading = true; this.error = null; this.api.search(this.toCriteria()).pipe(finalize(() => this.loading = false)).subscribe({ next: value => this.result = value, error: value => this.handleError(value) }); }
+  load(): void { this.loading = true; this.error = null; this.changeDetector.markForCheck(); this.api.search(this.toCriteria()).pipe(finalize(() => { this.loading = false; this.changeDetector.markForCheck(); })).subscribe({ next: value => { this.result = value; this.changeDetector.markForCheck(); }, error: value => this.handleError(value) }); }
   submit(): void { this.page = 1; this.updateUrlAndLoad(); }
   previous(): void { if (this.page > 1) { this.page--; this.updateUrlAndLoad(); } }
   get totalPages(): number { return this.result ? Math.max(1, Math.ceil(this.result.totalCount / this.result.pageSize)) : 1; }
@@ -55,5 +59,5 @@ export class TicketListPage implements OnInit {
   }
   private toCriteria(): TicketSearchFilters { const raw = this.filters.getRawValue(); return { number: raw.number || undefined, status: this.numberOrUndefined(raw.status), type: this.numberOrUndefined(raw.type), createdFrom: raw.createdFrom ? new Date(`${raw.createdFrom}T00:00:00Z`).toISOString() : undefined, createdTo: raw.createdTo ? new Date(`${raw.createdTo}T23:59:59.999Z`).toISOString() : undefined, page: this.page, pageSize: this.pageSize }; }
   private numberOrUndefined(value: string): number | undefined { return value === '' ? undefined : Number(value); }
-  private handleError(error: unknown): void { const status = error instanceof HttpErrorResponse ? error.status : 0; this.error = status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status >= 500 ? 'server' : status === 0 ? 'network' : 'server'; }
+  private handleError(error: unknown): void { const status = error instanceof HttpErrorResponse ? error.status : 0; this.error = status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status >= 500 ? 'server' : status === 0 ? 'network' : 'server'; this.changeDetector.markForCheck(); }
 }

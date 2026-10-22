@@ -44,6 +44,23 @@ public sealed class TicketLifecycleTests
     }
 
     [Fact]
+    public void Specialized_status_entry_point_rejects_invalid_closure_and_cancelled_mutation()
+    {
+        var ticket = NewTicket();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            ticket.TransitionSpecializedStatus(TicketStatus.Closed, 10, DateTimeOffset.UtcNow, null));
+
+        ticket.TransitionSpecializedStatus(TicketStatus.Resolved, 10, DateTimeOffset.UtcNow, "specialized resolution");
+        ticket.TransitionSpecializedStatus(TicketStatus.Closed, 10, DateTimeOffset.UtcNow, null);
+        ticket.TransitionSpecializedStatus(TicketStatus.Reopened, 10, DateTimeOffset.UtcNow, "reopened");
+
+        ticket.Cancel("cancelled after reopen", 10, DateTimeOffset.UtcNow);
+        Assert.Throws<InvalidOperationException>(() =>
+            ticket.TransitionSpecializedStatus(TicketStatus.Resolved, 10, DateTimeOffset.UtcNow, null));
+    }
+
+    [Fact]
     public void Attachment_policy_does_not_allow_retired_version_to_return()
     {
         Assert.Throws<InvalidOperationException>(() => AttachmentVersionPolicy.ValidateTransition("RETIRED", "CURRENT"));
@@ -101,6 +118,8 @@ public sealed class WorkflowApprovalSlaTests
 {
  [Fact] public void Parallel_join_all_required_activates_only_after_both_branches(){var v=new PA.Tickets.Domain.Workflow.WorkflowVersion(1,1,1,new[]{new PA.Tickets.Domain.Workflow.WorkflowStepDefinition("A","Start",PA.Tickets.Domain.Workflow.WorkflowStepType.Work),new("B","Branch B",PA.Tickets.Domain.Workflow.WorkflowStepType.Work),new("C","Branch C",PA.Tickets.Domain.Workflow.WorkflowStepType.Work),new("E","End",PA.Tickets.Domain.Workflow.WorkflowStepType.Work)},new[]{new PA.Tickets.Domain.Workflow.WorkflowTransitionDefinition("A-B","A","B"),new("A-C","A","C"),new("B-E","B","E"),new("C-E","C","E")});Assert.True(v.Validate().IsValid);var i=new PA.Tickets.Domain.Workflow.WorkflowInstance(1,10,v,DateTimeOffset.UtcNow);i.CompleteStep("A",v,new Dictionary<string,string?>(),DateTimeOffset.UtcNow);Assert.Contains("B",i.ActiveSteps);Assert.Contains("C",i.ActiveSteps);i.CompleteStep("B",v,new Dictionary<string,string?>(),DateTimeOffset.UtcNow);Assert.DoesNotContain("E",i.ActiveSteps);i.CompleteStep("C",v,new Dictionary<string,string?>(),DateTimeOffset.UtcNow);Assert.Contains("E",i.ActiveSteps);}
  [Fact] public void Conditional_transition_uses_controlled_fields_only(){var v=new PA.Tickets.Domain.Workflow.WorkflowVersion(1,1,1,new[]{new PA.Tickets.Domain.Workflow.WorkflowStepDefinition("A","Decision",PA.Tickets.Domain.Workflow.WorkflowStepType.Decision),new("B","True",PA.Tickets.Domain.Workflow.WorkflowStepType.Work),new("C","False",PA.Tickets.Domain.Workflow.WorkflowStepType.Work)},new[]{new PA.Tickets.Domain.Workflow.WorkflowTransitionDefinition("T","A","B",new("Priority","EQUALS","CRITICAL")),new("F","A","C",new("Priority","NOT_EQUALS","CRITICAL"))});var i=new PA.Tickets.Domain.Workflow.WorkflowInstance(1,10,v,DateTimeOffset.UtcNow);i.CompleteStep("A",v,new Dictionary<string,string?>{{"Priority","CRITICAL"}},DateTimeOffset.UtcNow);Assert.Contains("B",i.ActiveSteps);Assert.DoesNotContain("C",i.ActiveSteps);}
+ [Fact] public void Cancelling_workflow_marks_active_steps_cancelled_instead_of_failed(){var v=new PA.Tickets.Domain.Workflow.WorkflowVersion(1,1,1,new[]{new PA.Tickets.Domain.Workflow.WorkflowStepDefinition("A","Start",PA.Tickets.Domain.Workflow.WorkflowStepType.Work)},Array.Empty<PA.Tickets.Domain.Workflow.WorkflowTransitionDefinition>());var i=new PA.Tickets.Domain.Workflow.WorkflowInstance(1,10,v,DateTimeOffset.UtcNow);i.Cancel("operator requested",DateTimeOffset.UtcNow);var step=Assert.Single(i.Steps);Assert.Equal(PA.Tickets.Domain.Workflow.WorkflowStepStatus.Cancelled,step.Status);Assert.DoesNotContain(i.Events,e=>e.Action=="WORKFLOW_STEP_FAILED");Assert.Contains(i.Events,e=>e.Action=="WORKFLOW_CANCELLED");}
+ [Fact] public void Failing_workflow_step_requires_active_or_waiting_state(){var now=DateTimeOffset.UtcNow;var v=new PA.Tickets.Domain.Workflow.WorkflowVersion(1,1,1,new[]{new PA.Tickets.Domain.Workflow.WorkflowStepDefinition("A","Start",PA.Tickets.Domain.Workflow.WorkflowStepType.Work),new("B","Next",PA.Tickets.Domain.Workflow.WorkflowStepType.Work)},new[]{new PA.Tickets.Domain.Workflow.WorkflowTransitionDefinition("A-B","A","B")});var i=new PA.Tickets.Domain.Workflow.WorkflowInstance(1,10,v,now);Assert.Throws<InvalidOperationException>(()=>i.FailStep("B","not started",now));i.FailStep("A","failed",now);Assert.Throws<InvalidOperationException>(()=>i.FailStep("A","already failed",now));}
  [Fact] public void Sequential_approval_enforces_levels_and_sod(){var rule=new PA.Tickets.Domain.Approvals.ApprovalRule(1,"RULE",PA.Tickets.Domain.Approvals.ApprovalMode.Sequential,new[]{30L,40L});var a=new PA.Tickets.Domain.Approvals.ApprovalInstance(rule,1,10,10,20);a.Request(10,DateTimeOffset.UtcNow);Assert.Throws<InvalidOperationException>(()=>a.Decide(40,PA.Tickets.Domain.Approvals.ApprovalDecision.Approved,null,DateTimeOffset.UtcNow));a.Decide(30,PA.Tickets.Domain.Approvals.ApprovalDecision.Approved,null,DateTimeOffset.UtcNow);a.Decide(40,PA.Tickets.Domain.Approvals.ApprovalDecision.Approved,null,DateTimeOffset.UtcNow);Assert.True(a.IsComplete);}
  [Fact] public void Sla_clock_uses_business_calendar_pause_extensions_and_checks_both_deadlines()
  {

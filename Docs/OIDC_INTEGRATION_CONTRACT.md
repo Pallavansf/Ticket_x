@@ -1,14 +1,14 @@
-﻿# OIDC integration contract — provider-neutral
+# Optional OIDC integration contract — provider-neutral
 
-## Current implementation evidence
+## Status and current authentication
 
-The Angular client currently uses an in-memory `AuthService` session. `setBearerToken()` accepts a token supplied by a host integration, decodes only display/permission claims for presentation, and does not persist the token in localStorage or sessionStorage. The login form intentionally reports that the backend has no credential or token endpoint. The interceptor adds `Authorization: Bearer` only for configured API requests, adds `X-Correlation-ID`, and clears the session on HTTP 401. Guards are navigation UX; backend authorization remains authoritative. Expired sessions are rejected against the current clock.
+OIDC/SSO is a **future optional add-on** and is not required for local acceptance. The current local authentication method is application-managed username/password at `POST /api/v1/auth/login`. Password hashes use ASP.NET Core Identity hashing in `PA_TICKETS_USER.S_PASSWORD_HASH`; a local signing key issues a short-lived bearer JWT. RBAC and department/team/client resource authorization remain database-backed. OIDC issuer/authority settings are only needed if the optional OIDC bearer scheme is configured.
 
-The API accepts bearer tokens through ASP.NET Core JwtBearer. Production requires HTTPS `Auth:Authority` and `Auth:Issuer`, a non-empty `Auth:Audience`, discovery signing keys, issuer equality, signed tokens, expiration, lifetime validation, and RSA SHA-256, RSA-PSS SHA-256, or ECDSA SHA-256 algorithms. The validated subject must parse as a positive numeric PA Tickets user ID. Inbound claim mapping is enabled. Production CORS requires explicitly configured HTTPS origins; trusted forwarded headers require production-only known proxy IPs. Development currently has an empty authority and `Auth:Enabled: false`, so no live OIDC flow is configured.
+The Angular client holds the authenticated session in memory, does not persist bearer tokens in localStorage/sessionStorage, attaches tokens to API requests, and clears them after HTTP 401. Client-side guards only provide navigation UX; backend authorization remains authoritative. OIDC-specific browser registration, PKCE flow, redirect/logout URIs, provider claim mapping, and discovery key operations described below remain unimplemented and deferred.
 
-## Required identity-provider capabilities
+## Optional identity-provider capabilities
 
-The approved provider must support:
+If OIDC is later enabled, the approved provider must support:
 
 - OpenID Connect discovery over HTTPS;
 - Authorization Code flow with PKCE for a public browser client;
@@ -18,7 +18,7 @@ The approved provider must support:
 - predictable expiry, logout, and reauthentication behavior;
 - claim configuration or a verified mapping that supplies the backend-required subject and any authorization claims.
 
-Provider, tenant, issuer, client ID, registration owner, and environment-specific values are **TBD**.
+Provider, tenant, issuer, client ID, registration owner, and environment-specific values are **TBD**. Their absence does not block regular local authentication.
 
 ## Client registration and URI decisions
 
@@ -37,7 +37,7 @@ An organization must approve one public SPA registration per environment or an e
 
 Redirect and logout URI matching must be exact, HTTPS in deployed environments, and limited to owned origins. Wildcards and arbitrary return URLs are not acceptable.
 
-## Recommended browser flow and token handoff
+## Deferred browser flow and token handoff
 
 Use Authorization Code + PKCE through an approved OIDC client library selected during implementation approval. The SPA should acquire an access token for the API, keep it in memory, and hand it to the existing boundary through `AuthService.setBearerToken()`. The current Angular service should remain the only token consumer used by the interceptor. No token should be placed in localStorage, sessionStorage, query strings, logs, or application telemetry.
 
@@ -45,9 +45,9 @@ The authorization response must validate state, nonce where applicable, PKCE ver
 
 Logout must clear the Angular session, cancel pending protected navigation, and perform the provider’s approved logout flow when one is configured. The post-logout URI must be one of the registered exact URIs. A 401 from the API must clear memory and require reauthentication; a 403 must preserve the session and show access denial.
 
-## Backend validation contract
+## Deferred backend validation contract
 
-The backend deployment must set:
+These settings apply only when the optional OIDC scheme is enabled; they are not required for local username/password authentication. The backend deployment must then set:
 
 - `Auth:Authority` to the approved HTTPS OIDC authority/discovery issuer: **TBD**;
 - `Auth:Issuer` to the exact issuer returned and expected from discovery: **TBD**;
@@ -59,11 +59,11 @@ Issuer, audience, signature, algorithm, expiry, and lifetime validation must rem
 
 Identity-provider roles/scopes/permissions are **TBD**. They must be mapped to the backend’s existing authorization service and policies through an approved claim mapping. Angular permission presentation may consume claims for UX, but it cannot grant API access.
 
-## Environment requirements
+## Environment requirements when OIDC is enabled
 
-- Development: local HTTPS/API origin and SPA origin are **TBD**; use non-production provider registration only; never commit secrets.
-- Test: isolated provider tenant/client or controlled test authority is **TBD**; automated tests continue using mocks and existing test authentication only.
-- Production: HTTPS authority, exact HTTPS SPA/API origins, issuer/audience, signing-key discovery, proxy configuration, monitoring, key rotation, and incident response are **TBD** and must be approved before deployment.
+- Development: local HTTPS/API origin and SPA origin are **TBD**; use non-production provider registration only; never commit secrets. This is unnecessary for the regular local username/password flow.
+- Test: isolated provider tenant/client or controlled test authority is **TBD**; local-auth tests do not require one.
+- Production: HTTPS authority, exact HTTPS SPA/API origins, issuer/audience, signing-key discovery, proxy configuration, monitoring, key rotation, and incident response are **TBD** and must be approved before enabling OIDC.
 
 Configuration should be injected through deployment environment/configuration systems. Client IDs are not secrets, but issuer, audience, redirect, and scope values still require review. Client secrets must not be shipped to the SPA.
 
