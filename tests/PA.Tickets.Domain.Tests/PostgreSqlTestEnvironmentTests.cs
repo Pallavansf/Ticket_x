@@ -174,14 +174,13 @@ public sealed class PostgreSqlTestEnvironmentTests
     }
 
     [Fact]
-    public void Provider_preflight_verifies_explicit_baseline_hash_without_provider_access()
+    public void Provider_preflight_rejects_unverified_historical_baseline_hash_without_provider_access()
     {
-        var result = PostgreSqlProviderPreflight.Verify(
+        var error = Assert.Throws<InvalidOperationException>(() => PostgreSqlProviderPreflight.Verify(
             Directory.GetParent(AppContext.BaseDirectory)!.Parent!.Parent!.Parent!.Parent!.Parent!.FullName,
-            new("host=localhost;port=5432;database=pa_tickets_e2e_verify;user=postgres", "tests/scripts/postgresql-foundational-ddl.sql", "5CAA69711E3804C301F04ADEF049CEE33830F937B7F5DAF8BD3BEF796D5537F7", "owner-approval-reference", "separately retained evidence", "READ_ONLY_CATALOG_RECONCILIATION", "OWNER_APPROVED", DateTimeOffset.UtcNow.AddHours(1), "target-evidence-reference", "least-privilege-decision-reference"));
+            new("host=localhost;port=5432;database=pa_tickets_e2e_verify;user=postgres", "tests/scripts/postgresql-foundational-ddl.sql", "5CAA69711E3804C301F04ADEF049CEE33830F937B7F5DAF8BD3BEF796D5537F7", "owner-approval-reference", "separately retained evidence", "READ_ONLY_CATALOG_RECONCILIATION", "OWNER_APPROVED", DateTimeOffset.UtcNow.AddHours(1), "target-evidence-reference", "least-privilege-decision-reference")));
 
-        Assert.Equal("tests/scripts/postgresql-foundational-ddl.sql", result.BaselineArtifactPath);
-        Assert.Equal("5CAA69711E3804C301F04ADEF049CEE33830F937B7F5DAF8BD3BEF796D5537F7", result.VerifiedSha256);
+        Assert.Contains("hash", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
