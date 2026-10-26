@@ -15,7 +15,7 @@ provider authorization, baseline adoption, or migration execution authority.
 | Approval status | Explicit `OWNER_APPROVED`, signed or otherwise verifiable | **PENDING** |
 | Approval date / expiry | UTC issue and expiry; revalidate on target, artifact, policy, or privilege change | **PENDING** — issued: ______; expires: ______ |
 | Revocation | Owner-controlled revocation contact and evidence source | **PENDING** — contact: ______ |
-| Exact target | Host: `localhost`; port: `5432`; database: `pa_tickets_e2e_verify`; role: `postgres` | **PENDING** — prior identity evidence exists, but no new provider connection is authorized here |
+| Exact target | Historical candidate: host `localhost`; port: `5432`; database: `pa_tickets_e2e_verify`; role: `postgres` | **PENDING / TARGET CONFLICT** — later bring-up evidence names `pa_tickets_codex_e2e` / `pa_tickets_codex`; owner selection and current TGT attestation are absent |
 | Target identity evidence | Independent server/database/user/port evidence plus approved hostname, DNS, peer, TLS, and SNI policy | **PENDING** — evidence reference: ______ |
 | Operation scope | Read-only catalog metadata: identity, tables, columns, constraints, indexes, and sequence metadata | **PENDING** — scope owner: ______ |
 | Baseline artifact | `tests/scripts/postgresql-foundational-ddl.sql` | **EVIDENCE READY; APPROVAL PENDING** |
@@ -31,6 +31,10 @@ Owner identity: ____________________
 Decision date (UTC): ____________________  
 Scope/environment: ____________________  
 Signature or approval reference: ____________________
+
+## User-supplied target evidence (not independently executed by Codex)
+
+The user-selected target is localhost:5432 / pa_tickets_codex_e2e / pa_tickets_codex. The supplied SQL result reports server ::1, PostgreSQL 18.6, recovery false, transaction read-only off, and SSL false. Non-TLS IPv6 loopback is accepted for local read-only identity verification. This evidence is not a live query performed by Codex. The packet still requires attributable owner identity/role, UTC issue date, fixed expiry, approval reference, rationale, and evidence custody; its status remains PENDING / TARGET CONFLICT until those fields are supplied.
 
 ## Identity-policy questions requiring approval
 

@@ -3,7 +3,8 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 
-export interface TicketView { id: number; number: string; type: number; status: number; subject: string; priorityId: number | null; currentDepartmentId: number | null; currentTeamId: number | null; currentAssignee: number | null; workItems: readonly WorkItemView[]; serviceId?: number | null; categoryId?: number | null; requestTypeId?: number | null; requestTypeVersion?: number | null; }
+export interface TicketHistoryView { id: number; action: string; actorId: number; occurredAt: string; oldValue?: string | null; newValue?: string | null; reason?: string | null; category: string; }
+export interface TicketView { id: number; number: string; type: number; status: number; subject: string; priorityId: number | null; currentDepartmentId: number | null; currentTeamId: number | null; currentAssignee: number | null; workItems: readonly WorkItemView[]; serviceId?: number | null; categoryId?: number | null; requestTypeId?: number | null; requestTypeVersion?: number | null; history?: readonly TicketHistoryView[]; }
 export interface WorkItemView { id: number; number: string; publicId: string; status: string; assignedToUserId?: number | null; waitingFor?: string | null; waitingMinutes: number; }
 export interface TicketSearchPage { items: readonly TicketView[]; page: number; pageSize: number; totalCount: number; }
 export interface TicketSearchFilters { number?: string; status?: number; type?: number; priorityId?: number; serviceId?: number; categoryId?: number; requestTypeId?: number; clientId?: number; departmentId?: number; teamId?: number; assigneeId?: number; createdFrom?: string; createdTo?: string; page: number; pageSize: number; }

@@ -24,6 +24,7 @@ describe('TicketDetailPage', () => {
     serviceId: 10,
     categoryId: 20,
     requestTypeId: 30,
+    history: [{ id: 1, action: 'TICKET_CREATED', actorId: 7, occurredAt: '2026-10-23T00:00:00Z', oldValue: null, newValue: 'New', reason: null, category: 'LIFECYCLE' }],
     workItems: [{
       id: 9,
       number: 'WI-9',
@@ -65,6 +66,7 @@ describe('TicketDetailPage', () => {
     expect(api.get).toHaveBeenCalledWith(42);
     expect(fixture.nativeElement.textContent).toContain('INC-42');
     expect(fixture.nativeElement.textContent).toContain('WI-9');
+    expect(fixture.nativeElement.textContent).toContain('TICKET_CREATED');
   });
 
   it('preserves the list filter context when returning to ticket search', () => {

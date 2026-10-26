@@ -16,6 +16,56 @@ namespace PA.Tickets.Domain.Tests;
 public sealed class PostgreSqlTicketPersistenceTests
 {
     [Fact]
+    public async Task Ef_ticket_repository_persists_and_reloads_a_ticket_without_authorization_facts()
+    {
+        PostgreSqlTestEnvironment.EnsureConfigured();
+        await using var provider = BuildProvider();
+        var ticketId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000 + Random.Shared.Next(1, 999);
+        var number = $"PERSIST-{ticketId}";
+        var now = DateTimeOffset.UtcNow;
+        var ticket = Ticket.Create(ticketId, number, TicketType.Request, "Repository persistence proof", "provider-backed repository test", 1001, 1001, now);
+
+        try
+        {
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
+                await repository.AddAsync(ticket, CancellationToken.None);
+            }
+
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
+                var reloaded = await repository.GetAsync(ticketId, CancellationToken.None);
+                Assert.NotNull(reloaded);
+                Assert.Equal(number, reloaded!.Number);
+                Assert.Equal("Repository persistence proof", reloaded.Subject);
+                Assert.Equal(TicketType.Request, reloaded.Type);
+                Assert.Equal(TicketStatus.New, reloaded.Status);
+                Assert.Equal(1001, reloaded.RequestedBy);
+                var audit = await scope.ServiceProvider.GetRequiredService<TicketsDbContext>().Audits
+                    .AsNoTracking()
+                    .Where(x => x.EntityType == "TICKET" && x.EntityId == ticketId.ToString())
+                    .ToArrayAsync();
+                Assert.Single(audit);
+                Assert.Equal("TICKET_CREATED", audit[0].Action);
+                var history = await repository.GetHistoryAsync(ticketId, CancellationToken.None);
+                Assert.Contains(history, entry => entry.Action == "TICKET_CREATED" && entry.NewValue == "New");
+            }
+        }
+        finally
+        {
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_TICKET_ID"" = {ticketId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORK_ITEM"" where ""N_TICKET_ID"" = {ticketId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {ticketId}");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
+            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
+        }
+    }
+
+    [Fact]
     public async Task Ticket_lifecycle_service_persists_and_reloads_core_ticket_flow_in_postgresql()
     {
         PostgreSqlTestEnvironment.EnsureConfigured();

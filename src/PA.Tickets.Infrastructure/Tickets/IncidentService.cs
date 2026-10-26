@@ -36,37 +36,51 @@ public sealed class IncidentService(
         if (!string.IsNullOrWhiteSpace(command.IdempotencyKey) && await db.Incidents.AnyAsync(x => x.IdempotencyKey == command.IdempotencyKey, ct))
             throw new InvalidOperationException("Incident request was already processed.");
 
-        var created = command.SubCategoryId.HasValue
-            ? await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, command.RequestTypeId, ServiceId: command.ServiceId, CategoryId: command.CategoryId, SubCategoryId: command.SubCategoryId, PriorityId: command.PriorityId), ct)
-            : await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, PriorityId: command.PriorityId), ct);
-
-        var now = clock.GetUtcNow();
-        var row = new IncidentRow
+        await using var creationTx = await AuditTransaction.BeginIfNeededAsync(db, ct);
+        TicketView? created = null;
+        try
         {
-            TicketId = created.Id,
-            Impact = command.Impact.ToString(),
-            Urgency = command.Urgency.ToString(),
-            IsMajorIncident = false,
-            IncidentCommanderUserId = command.IncidentCommanderUserId,
-            CreatedAt = now,
-            UpdatedAt = now,
-            IdempotencyKey = command.IdempotencyKey
-        };
+            created = command.SubCategoryId.HasValue
+                ? await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, command.RequestTypeId, ServiceId: command.ServiceId, CategoryId: command.CategoryId, SubCategoryId: command.SubCategoryId, PriorityId: command.PriorityId), ct)
+                : await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, PriorityId: command.PriorityId), ct);
 
-        db.Incidents.Add(row);
-        db.Events.Add(new EventRow
+            var now = clock.GetUtcNow();
+            var row = new IncidentRow
+            {
+                TicketId = created.Id,
+                Impact = command.Impact.ToString(),
+                Urgency = command.Urgency.ToString(),
+                IsMajorIncident = false,
+                IncidentCommanderUserId = command.IncidentCommanderUserId,
+                CreatedAt = now,
+                UpdatedAt = now,
+                IdempotencyKey = command.IdempotencyKey
+            };
+
+            db.Incidents.Add(row);
+            db.Events.Add(new EventRow
+            {
+                TicketId = created.Id,
+                Type = "INCIDENT_CREATED",
+                Category = "INCIDENT",
+                ActorId = actor,
+                NewValue = $"{command.Impact}:{command.Urgency}",
+                Reason = command.CorrelationId ?? command.IdempotencyKey,
+                At = now
+            });
+            await AddAuditAsync("INCIDENT", created.Id.ToString(), "INCIDENT_CREATED", actor, command.CorrelationId ?? command.IdempotencyKey, ct);
+            await db.SaveChangesAsync(ct);
+            await creationTx.CommitIfOwnedAsync(ct);
+            if (creationTx is not null)
+                TicketEventCommitBoundary.ClearAfterSuccessfulCommit(created.Id);
+            return await GetAsync(created.Id, actor, ct);
+        }
+        catch
         {
-            TicketId = created.Id,
-            Type = "INCIDENT_CREATED",
-            Category = "INCIDENT",
-            ActorId = actor,
-            NewValue = $"{command.Impact}:{command.Urgency}",
-            Reason = command.CorrelationId ?? command.IdempotencyKey,
-            At = now
-        });
-        await AddAuditAsync("INCIDENT", created.Id.ToString(), "INCIDENT_CREATED", actor, command.CorrelationId ?? command.IdempotencyKey, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(created.Id, actor, ct);
+            if (created is not null)
+                TicketEventCommitBoundary.DiscardPending(created.Id);
+            throw;
+        }
     }
 
     public async Task<IncidentView> AcknowledgeAsync(long ticketId, string? reason, long actor, CancellationToken ct)
@@ -74,22 +88,23 @@ public sealed class IncidentService(
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         if (row.AcknowledgedAt is not null) throw new InvalidOperationException("Incident was already acknowledged.");
-        row.AcknowledgedAt ??= clock.GetUtcNow();
-        row.AcknowledgedBy = actor;
-        row.UpdatedAt = row.AcknowledgedAt.Value;
-        db.Events.Add(new EventRow
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
         {
-            TicketId = ticketId,
-            Type = "INCIDENT_ACKNOWLEDGED",
-            Category = "INCIDENT",
-            ActorId = actor,
-            NewValue = row.AcknowledgedAt.Value.ToString("O"),
-            Reason = reason,
-            At = row.AcknowledgedAt.Value
-        });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_ACKNOWLEDGED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+            row.AcknowledgedAt ??= now;
+            row.AcknowledgedBy = actor;
+            row.UpdatedAt = row.AcknowledgedAt.Value;
+            db.Events.Add(new EventRow
+            {
+                TicketId = ticketId,
+                Type = "INCIDENT_ACKNOWLEDGED",
+                Category = "INCIDENT",
+                ActorId = actor,
+                NewValue = row.AcknowledgedAt.Value.ToString("O"),
+                Reason = reason,
+                At = row.AcknowledgedAt.Value
+            });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_ACKNOWLEDGED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> AssignCommanderAsync(long ticketId, long commanderUserId, long actor, string? reason, CancellationToken ct)
@@ -100,21 +115,22 @@ public sealed class IncidentService(
         var domainTicket = ToTicket(ticket);
         await authorizer.EnsureCanAssignAsync(actor, new AuthorizationResource(domainTicket.Id, domainTicket.CurrentDepartmentId, domainTicket.CurrentTeamId, domainTicket.ClientId, domainTicket.CurrentAssignee), ticket.CurrentDepartmentId, ticket.CurrentTeamId, commanderUserId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
-        row.IncidentCommanderUserId = commanderUserId;
-        row.UpdatedAt = clock.GetUtcNow();
-        db.Events.Add(new EventRow
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
         {
-            TicketId = ticketId,
-            Type = "INCIDENT_COMMANDER_ASSIGNED",
-            Category = "INCIDENT",
-            ActorId = actor,
-            NewValue = commanderUserId.ToString(),
-            Reason = reason,
-            At = row.UpdatedAt
-        });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_COMMANDER_ASSIGNED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+            row.IncidentCommanderUserId = commanderUserId;
+            row.UpdatedAt = now;
+            db.Events.Add(new EventRow
+            {
+                TicketId = ticketId,
+                Type = "INCIDENT_COMMANDER_ASSIGNED",
+                Category = "INCIDENT",
+                ActorId = actor,
+                NewValue = commanderUserId.ToString(),
+                Reason = reason,
+                At = now
+            });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_COMMANDER_ASSIGNED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> DeclareMajorAsync(long ticketId, long actor, string? reason, CancellationToken ct)
@@ -123,24 +139,24 @@ public sealed class IncidentService(
         await EnsureMutateAsync(ticketId, actor, ct);
         if (row.IsMajorIncident) throw new InvalidOperationException("Major incident was already declared.");
 
-        var now = clock.GetUtcNow();
-        row.IsMajorIncident = true;
-        row.MajorIncidentDeclaredAt = now;
-        row.MajorIncidentDeclaredBy = actor;
-        row.UpdatedAt = now;
-        db.Events.Add(new EventRow
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
         {
-            TicketId = ticketId,
-            Type = "INCIDENT_MAJOR_DECLARED",
-            Category = "INCIDENT",
-            ActorId = actor,
-            NewValue = "true",
-            Reason = reason,
-            At = now
-        });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_MAJOR_DECLARED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+            row.IsMajorIncident = true;
+            row.MajorIncidentDeclaredAt = now;
+            row.MajorIncidentDeclaredBy = actor;
+            row.UpdatedAt = now;
+            db.Events.Add(new EventRow
+            {
+                TicketId = ticketId,
+                Type = "INCIDENT_MAJOR_DECLARED",
+                Category = "INCIDENT",
+                ActorId = actor,
+                NewValue = "true",
+                Reason = reason,
+                At = now
+            });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_MAJOR_DECLARED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> RestoreAsync(long ticketId, long actor, string? reason, CancellationToken ct)
@@ -148,23 +164,23 @@ public sealed class IncidentService(
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         if (row.RestoredAt is not null) throw new InvalidOperationException("Incident was already restored.");
-        var now = clock.GetUtcNow();
-        row.RestoredAt = now;
-        row.RestoredBy = actor;
-        row.UpdatedAt = now;
-        db.Events.Add(new EventRow
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
         {
-            TicketId = ticketId,
-            Type = "INCIDENT_RESTORED",
-            Category = "INCIDENT",
-            ActorId = actor,
-            NewValue = "true",
-            Reason = reason,
-            At = now
-        });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_RESTORED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+            row.RestoredAt = now;
+            row.RestoredBy = actor;
+            row.UpdatedAt = now;
+            db.Events.Add(new EventRow
+            {
+                TicketId = ticketId,
+                Type = "INCIDENT_RESTORED",
+                Category = "INCIDENT",
+                ActorId = actor,
+                NewValue = "true",
+                Reason = reason,
+                At = now
+            });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_RESTORED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> ResolveAsync(long ticketId, string? rootCauseSummary, string? workaroundSummary, string? resolutionSummary, long actor, CancellationToken ct)
@@ -172,6 +188,7 @@ public sealed class IncidentService(
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         if (row.ResolvedAt is not null) throw new InvalidOperationException("Incident was already resolved.");
+        await tickets.EnsureSpecializedStatusTransitionAllowedAsync(ticketId, TicketStatus.Resolved, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var now = clock.GetUtcNow();
         row.RootCauseSummary = rootCauseSummary;
@@ -202,6 +219,7 @@ public sealed class IncidentService(
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         if (string.IsNullOrWhiteSpace(reason)) throw new ArgumentException("Reopen reason is required.");
+        await tickets.EnsureSpecializedStatusTransitionAllowedAsync(ticketId, TicketStatus.Reopened, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var now = clock.GetUtcNow();
         row.ResolvedAt = null;
@@ -229,6 +247,7 @@ public sealed class IncidentService(
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         if (row.ClosedAt is not null) throw new InvalidOperationException("Incident was already closed.");
+        await tickets.EnsureSpecializedStatusTransitionAllowedAsync(ticketId, TicketStatus.Closed, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var now = clock.GetUtcNow();
         row.ClosedAt = now;
@@ -254,26 +273,26 @@ public sealed class IncidentService(
     {
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
-        var now = clock.GetUtcNow();
-        row.Impact = impact.ToString();
-        row.UpdatedAt = now;
-        db.Events.Add(new EventRow { TicketId = ticketId, Type = "INCIDENT_IMPACT_CHANGED", Category = "INCIDENT", ActorId = actor, NewValue = impact.ToString(), Reason = reason, At = now });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_IMPACT_CHANGED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
+        {
+            row.Impact = impact.ToString();
+            row.UpdatedAt = now;
+            db.Events.Add(new EventRow { TicketId = ticketId, Type = "INCIDENT_IMPACT_CHANGED", Category = "INCIDENT", ActorId = actor, NewValue = impact.ToString(), Reason = reason, At = now });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_IMPACT_CHANGED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> UpdateUrgencyAsync(long ticketId, IncidentUrgency urgency, long actor, string? reason, CancellationToken ct)
     {
         var row = await LoadRowAsync(ticketId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
-        var now = clock.GetUtcNow();
-        row.Urgency = urgency.ToString();
-        row.UpdatedAt = now;
-        db.Events.Add(new EventRow { TicketId = ticketId, Type = "INCIDENT_URGENCY_CHANGED", Category = "INCIDENT", ActorId = actor, NewValue = urgency.ToString(), Reason = reason, At = now });
-        await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_URGENCY_CHANGED", actor, reason, ct);
-        await db.SaveChangesAsync(ct);
-        return await GetAsync(ticketId, actor, ct);
+        return await ExecuteMutationAsync(ticketId, actor, async now =>
+        {
+            row.Urgency = urgency.ToString();
+            row.UpdatedAt = now;
+            db.Events.Add(new EventRow { TicketId = ticketId, Type = "INCIDENT_URGENCY_CHANGED", Category = "INCIDENT", ActorId = actor, NewValue = urgency.ToString(), Reason = reason, At = now });
+            await AddAuditAsync("INCIDENT", ticketId.ToString(), "INCIDENT_URGENCY_CHANGED", actor, reason, ct);
+        }, ct);
     }
 
     public async Task<IncidentView> GetAsync(long ticketId, long actor, CancellationToken ct)
@@ -285,6 +304,15 @@ public sealed class IncidentService(
 
         await authorizer.EnsureCanAccessAsync(actor, ToTicket(ticket), ct);
         return ToView(ticket, incident);
+    }
+
+    private async Task<IncidentView> ExecuteMutationAsync(long ticketId, long actor, Func<DateTimeOffset, Task> stage, CancellationToken ct)
+    {
+        await using var tx = await AuditTransaction.BeginIfNeededAsync(db, ct);
+        await stage(clock.GetUtcNow());
+        await db.SaveChangesAsync(ct);
+        await tx.CommitIfOwnedAsync(ct);
+        return await GetAsync(ticketId, actor, ct);
     }
 
     private async Task<IncidentRow> LoadRowAsync(long ticketId, CancellationToken ct)

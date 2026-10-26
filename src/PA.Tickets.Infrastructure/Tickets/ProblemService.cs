@@ -215,6 +215,8 @@ public sealed class ProblemService(
         var row = await db.Problems.SingleOrDefaultAsync(x => x.TicketId == ticketId, ct) ?? throw new KeyNotFoundException($"Problem for ticket {ticketId} was not found.");
         if (ticket.TypeId != (int)TicketType.Problem) throw new KeyNotFoundException($"Problem for ticket {ticketId} was not found.");
         await authorizer.EnsureCanMutateAsync(actor, ToTicket(ticket), ct);
+        if (lifecycleStatus is TicketStatus status)
+            await tickets.EnsureSpecializedStatusTransitionAllowedAsync(ticketId, status, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var now = clock.GetUtcNow();
         var data = mutation(ticket, row, now);

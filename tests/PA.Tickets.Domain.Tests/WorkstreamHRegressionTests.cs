@@ -300,6 +300,7 @@ public sealed class WorkstreamHRegressionTests
         public Task<TicketView> CancelAsync(long id, string reason, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
         public Task<TicketView> CloseAsync(long id, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
         public Task<TicketView> TransitionSpecializedStatusAsync(long id, TicketStatus status, long actor, string? reason, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
+        public Task EnsureSpecializedStatusTransitionAllowedAsync(long id, TicketStatus status, long actor, CancellationToken ct) => Task.CompletedTask;
         public Task<TicketRelationship> AddRelationshipAsync(long id, long relatedId, string relationType, string? description, long actor, CancellationToken ct) => Task.FromResult(new TicketRelationship(0, 0, "", "", 0, DateTimeOffset.UtcNow));
     }
 

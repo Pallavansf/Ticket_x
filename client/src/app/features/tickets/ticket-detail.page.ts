@@ -3,11 +3,12 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute, RouterLink, convertToParamMap } from '@angular/router';
 import { finalize, of } from 'rxjs';
+import { DatePipe } from '@angular/common';
 import { StatusPanelComponent } from '../../shared/status-panel.component';
 import { TicketView, TicketsApiService } from '../../core/tickets-api.service';
 import { AuthService } from '../../core/auth/auth.service';
 
-@Component({ selector: 'app-ticket-detail', standalone: true, imports: [RouterLink, StatusPanelComponent], templateUrl: './ticket-detail.html', styleUrl: './ticket-detail.scss' })
+@Component({ selector: 'app-ticket-detail', standalone: true, imports: [RouterLink, StatusPanelComponent, DatePipe], templateUrl: './ticket-detail.html', styleUrl: './ticket-detail.scss' })
 export class TicketDetailPage implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(TicketsApiService);
@@ -30,7 +31,7 @@ export class TicketDetailPage implements OnInit {
   ngOnInit(): void {
     const queryMap$ = this.route.queryParamMap ?? of(this.route.snapshot.queryParamMap ?? convertToParamMap({}));
     queryMap$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(query => {
-      this.returnQueryParams = Object.fromEntries(['number', 'status', 'type', 'createdFrom', 'createdTo', 'page'].flatMap(key => {
+      this.returnQueryParams = Object.fromEntries(['number', 'status', 'type', 'priorityId', 'serviceId', 'categoryId', 'requestTypeId', 'clientId', 'departmentId', 'teamId', 'assigneeId', 'createdFrom', 'createdTo', 'page'].flatMap(key => {
         const value = query.get(key);
         return value === null ? [] : [[key, value]];
       }));

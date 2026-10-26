@@ -1,0 +1,14 @@
+
+{
+  "servers": {
+    "postgres-tickets-readonly": {
+      "type": "stdio",
+      "command": "npx.cmd",
+      "args": [
+        "-y",
+        "@microsoft/postgres-mcp",
+        "run"
+      ]
+    }
+  }
+}

@@ -55,6 +55,19 @@
     </dl>
   </section>
 
+  <section class="detail-card" aria-labelledby="history-title">
+    <h2 id="history-title">History</h2>
+    @if (!ticket.history || ticket.history.length === 0) {
+      <p class="muted">No lifecycle history was returned for this ticket.</p>
+    } @else {
+      <ol class="history-list">
+        @for (entry of ticket.history; track entry.id) {
+          <li><strong>{{ entry.action }}</strong><span>{{ entry.occurredAt | date:'medium' }}</span><span>Actor {{ entry.actorId }}</span>@if (entry.newValue) { <span>{{ entry.oldValue ? entry.oldValue + ' → ' : '' }}{{ entry.newValue }}</span> }@if (entry.reason) { <span>{{ entry.reason }}</span> }</li>
+        }
+      </ol>
+    }
+  </section>
+
   <section class="detail-card" aria-labelledby="work-items-title">
     <h2 id="work-items-title">Work items</h2>
     @if (ticket.workItems.length === 0) {

@@ -46,6 +46,78 @@ create table if not exists "PA_TICKETS" (
 );
 alter table "PA_TICKETS" add column if not exists "N_APPROVER_USER_ID" bigint;
 alter table "PA_TICKETS" add column if not exists "N_ROW_VERSION" integer not null default 0;
+-- Shadow properties used by TicketsDbContext/EfTicketRepository for catalogue
+-- version and sub-category round-tripping. These are source-backed additive
+-- columns; no historical backfill is implied.
+alter table "PA_TICKETS" add column if not exists "N_REQUEST_TYPE_VERSION" integer;
+alter table "PA_TICKETS" add column if not exists "N_SUB_CATEGORY_ID" bigint;
+
+-- Source-backed operational metadata required by TicketLifecycleService.
+-- The shape and canonical rows follow database/migrations/022_operational_metadata.sql
+-- and the StatusDefinitionRow/PriorityDefinitionRow EF mappings. This section
+-- intentionally contains no RBAC permissions, grants, or migration history.
+create sequence if not exists "PA_TICKETS_STATUS_SEQ";
+create sequence if not exists "PA_TICKETS_STATUS_TRANSITION_SEQ";
+create sequence if not exists "PA_TICKETS_PRIORITY_SEQ";
+create table if not exists "PA_TICKETS_STATUS" (
+  "N_STATUS_ID" bigint primary key,
+  "S_STATUS_CODE" varchar(50) not null unique,
+  "S_STATUS_NAME" varchar(100) not null,
+  "S_DESCRIPTION" varchar(1000),
+  "N_IS_INITIAL" boolean not null default false,
+  "N_IS_OPEN" boolean not null default true,
+  "N_IS_CLOSED" boolean not null default false,
+  "N_IS_CANCELLED" boolean not null default false,
+  "N_DISPLAY_ORDER" integer not null default 0,
+  "N_ACTIVE" boolean not null default true,
+  "N_ROW_VERSION" integer not null default 0,
+  "D_CREATED_AT" timestamptz not null default clock_timestamp(),
+  "N_CREATED_BY" bigint not null default 0,
+  "D_UPDATED_AT" timestamptz,
+  "N_UPDATED_BY" bigint
+);
+create table if not exists "PA_TICKETS_STATUS_TRANSITION" (
+  "N_STATUS_TRANSITION_ID" bigint primary key,
+  "S_FROM_STATUS_CODE" varchar(50) not null references "PA_TICKETS_STATUS"("S_STATUS_CODE"),
+  "S_TO_STATUS_CODE" varchar(50) not null references "PA_TICKETS_STATUS"("S_STATUS_CODE"),
+  "S_CONDITION" varchar(2000),
+  "N_ALLOWED" boolean not null default true,
+  "N_ROW_VERSION" integer not null default 0,
+  "D_CREATED_AT" timestamptz not null default clock_timestamp(),
+  "N_CREATED_BY" bigint not null default 0,
+  unique ("S_FROM_STATUS_CODE", "S_TO_STATUS_CODE")
+);
+create table if not exists "PA_TICKETS_PRIORITY" (
+  "N_PRIORITY_ID" bigint primary key,
+  "S_PRIORITY_CODE" varchar(30) not null unique,
+  "S_PRIORITY_NAME" varchar(100) not null,
+  "S_DESCRIPTION" varchar(1000),
+  "N_PRIORITY_LEVEL" integer not null,
+  "N_DISPLAY_ORDER" integer not null default 0,
+  "N_ACTIVE" boolean not null default true,
+  "N_IS_DEFAULT" boolean not null default false,
+  "N_ROW_VERSION" integer not null default 0,
+  "D_CREATED_AT" timestamptz not null default clock_timestamp(),
+  "N_CREATED_BY" bigint not null default 0,
+  "D_UPDATED_AT" timestamptz,
+  "N_UPDATED_BY" bigint
+);
+create index if not exists "IX_PA_TICKETS_STATUS_ACTIVE_ORDER" on "PA_TICKETS_STATUS"("N_ACTIVE", "N_DISPLAY_ORDER");
+create index if not exists "IX_PA_TICKETS_TRANSITION_TO" on "PA_TICKETS_STATUS_TRANSITION"("S_TO_STATUS_CODE", "N_ALLOWED");
+create index if not exists "IX_PA_TICKETS_PRIORITY_ACTIVE_ORDER" on "PA_TICKETS_PRIORITY"("N_ACTIVE", "N_DISPLAY_ORDER");
+create unique index if not exists "UX_PA_TICKETS_PRIORITY_DEFAULT" on "PA_TICKETS_PRIORITY" ((case when "N_IS_DEFAULT" then 1 end));
+insert into "PA_TICKETS_STATUS" ("N_STATUS_ID","S_STATUS_CODE","S_STATUS_NAME","N_IS_INITIAL","N_IS_OPEN","N_IS_CLOSED","N_IS_CANCELLED","N_DISPLAY_ORDER","N_ACTIVE","N_CREATED_BY") values
+  (1,'NEW','New',true,true,false,false,1,true,0),(2,'TRIAGE','Triage',false,true,false,false,2,true,0),(3,'ASSIGNED','Assigned',false,true,false,false,3,true,0),(4,'IN_PROGRESS','In Progress',false,true,false,false,4,true,0),(5,'WAITING','Waiting',false,true,false,false,5,true,0),(6,'PENDING_APPROVAL','Pending Approval',false,true,false,false,6,true,0),(7,'RESOLVED','Resolved',false,true,false,false,7,true,0),(8,'CLOSED','Closed',false,false,true,false,8,true,0),(9,'CANCELLED','Cancelled',false,false,false,true,9,true,0),(10,'REOPENED','Reopened',false,true,false,false,10,true,0)
+on conflict ("S_STATUS_CODE") do nothing;
+insert into "PA_TICKETS_PRIORITY" ("N_PRIORITY_ID","S_PRIORITY_CODE","S_PRIORITY_NAME","S_DESCRIPTION","N_PRIORITY_LEVEL","N_DISPLAY_ORDER","N_ACTIVE","N_IS_DEFAULT","N_CREATED_BY") values
+  (1,'LOW','Low','Low business impact',1,1,true,false,0),(2,'MEDIUM','Medium','Normal business priority',2,2,true,true,0),(3,'HIGH','High','High business impact',3,3,true,false,0),(4,'CRITICAL','Critical','Critical business impact requiring immediate action',4,4,true,false,0)
+on conflict ("S_PRIORITY_CODE") do nothing;
+insert into "PA_TICKETS_STATUS_TRANSITION" ("N_STATUS_TRANSITION_ID","S_FROM_STATUS_CODE","S_TO_STATUS_CODE","N_ALLOWED","N_CREATED_BY") values
+  (1,'NEW','TRIAGE',true,0),(2,'NEW','CANCELLED',true,0),(3,'TRIAGE','ASSIGNED',true,0),(4,'TRIAGE','CANCELLED',true,0),(5,'ASSIGNED','IN_PROGRESS',true,0),(6,'ASSIGNED','PENDING_APPROVAL',true,0),(7,'ASSIGNED','CANCELLED',true,0),(8,'PENDING_APPROVAL','ASSIGNED',true,0),(9,'PENDING_APPROVAL','CANCELLED',true,0),(10,'IN_PROGRESS','WAITING',true,0),(11,'IN_PROGRESS','RESOLVED',true,0),(12,'IN_PROGRESS','CANCELLED',true,0),(13,'WAITING','IN_PROGRESS',true,0),(14,'WAITING','RESOLVED',true,0),(15,'WAITING','CANCELLED',true,0),(16,'RESOLVED','CLOSED',true,0),(17,'RESOLVED','REOPENED',true,0),(18,'CLOSED','REOPENED',true,0),(19,'REOPENED','TRIAGE',true,0),(20,'REOPENED','ASSIGNED',true,0),(21,'REOPENED','CANCELLED',true,0)
+on conflict ("S_FROM_STATUS_CODE", "S_TO_STATUS_CODE") do nothing;
+select setval('"PA_TICKETS_STATUS_SEQ"', greatest(coalesce((select max("N_STATUS_ID") from "PA_TICKETS_STATUS"),0)+1,1), false);
+select setval('"PA_TICKETS_PRIORITY_SEQ"', greatest(coalesce((select max("N_PRIORITY_ID") from "PA_TICKETS_PRIORITY"),0)+1,1), false);
+select setval('"PA_TICKETS_STATUS_TRANSITION_SEQ"', greatest(coalesce((select max("N_STATUS_TRANSITION_ID") from "PA_TICKETS_STATUS_TRANSITION"),0)+1,1), false);
 create table if not exists "PA_TICKETS_WORK_ITEM" (
   "N_WORK_ITEM_ID" bigint primary key default nextval('public."PA_TICKETS_WORK_ITEM_SEQ"'::regclass),
   "N_TICKET_ID" bigint not null references "PA_TICKETS"("N_TICKET_ID"),
@@ -138,6 +210,40 @@ create table if not exists "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" (
   "N_TOKEN_ID" integer primary key,
   "S_TOKEN" varchar(128) not null
 );
+insert into "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" ("N_TOKEN_ID","S_TOKEN")
+select 1, md5(random()::text || clock_timestamp()::text)
+where not exists (select 1 from "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" where "N_TOKEN_ID" = 1);
+revoke all on table "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" from public;
+create or replace function pa_tickets_audit_guard() returns trigger
+language plpgsql security definer set search_path = pg_catalog, public as $$
+declare expected_token text;
+begin
+  select "S_TOKEN" into expected_token from "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" where "N_TOKEN_ID" = 1;
+  if current_setting('pa_tickets.audit_maintenance_token', true) is distinct from expected_token then
+    raise exception 'PA_TICKETS_AUDIT is append-only; maintenance authorization is required.' using errcode = '42501';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+revoke all on function pa_tickets_audit_guard() from public;
+drop trigger if exists "TR_PA_TICKETS_AUDIT_GUARD" on "PA_TICKETS_AUDIT";
+create trigger "TR_PA_TICKETS_AUDIT_GUARD" before update or delete on "PA_TICKETS_AUDIT"
+for each row execute function pa_tickets_audit_guard();
+create or replace function pa_tickets_maintenance_delete_audit_for_ticket(ticket_id bigint) returns void
+language plpgsql security definer set search_path = pg_catalog, public as $$
+declare maintenance_token text; deleted_count integer;
+begin
+  select "S_TOKEN" into maintenance_token from "PA_TICKETS_AUDIT_MAINTENANCE_TOKEN" where "N_TOKEN_ID" = 1;
+  perform set_config('pa_tickets.audit_maintenance_token', maintenance_token, true);
+  delete from "PA_TICKETS_AUDIT" where "S_ENTITY_ID" = ticket_id::text
+      or "S_ENTITY_ID" in (select "N_WORK_ITEM_ID"::text from "PA_TICKETS_WORK_ITEM" where "N_TICKET_ID" = ticket_id);
+  get diagnostics deleted_count = row_count;
+  insert into "PA_TICKETS_AUDIT_MAINTENANCE" ("N_TICKET_ID","S_ACTION","S_ACTOR","D_OCCURRED_AT","N_DELETED_ROWS")
+  values (ticket_id, 'AUDIT_DISPOSAL', session_user, clock_timestamp(), deleted_count);
+  perform set_config('pa_tickets.audit_maintenance_token', '', true);
+end;
+$$;
+revoke all on function pa_tickets_maintenance_delete_audit_for_ticket(bigint) from public;
 
 
 

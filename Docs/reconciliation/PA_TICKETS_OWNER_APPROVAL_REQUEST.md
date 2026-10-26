@@ -93,6 +93,14 @@ preservation evidence.
 **Owner role:** Audit/compliance authority.  
 **Downstream:** Migration 038 and audit schema changes.
 
+**Recommendation (not approval):** use an explicit actor type with a nullable
+user foreign key where appropriate, representing user, system, and historical
+or legacy actors without fabricating user identities. The owner response must
+also specify writer/reader compatibility and preserve existing audit history
+and hash-chain inputs. Current `AuditRow`/`TicketsDbContext` mappings use a
+non-null user actor and migration 038 intentionally aborts, so this proposal
+does not establish compatibility.
+
 Decision: `PENDING`  
 Owner identity: ______  Date: ______  Scope: ______  Approval reference/signature: ______  
 Rationale and evidence references: ______________________________________
@@ -119,6 +127,15 @@ Rationale/evidence: ______________________________________  Downstream: 035 and 
 
 Approve whether scope/delegation rows are derived from memberships or explicitly
 authored. Review migration 035, delegation readers, and data lineage.
+
+**Recommendation (not approval):** use explicitly authored, lifecycle-managed
+rows with an identifiable author, effective dates, explicit revocation,
+auditable changes, and fail-closed authorization when a valid row is absent.
+The current `$scope_backfill$` block in
+`database/migrations/postgresql/031_configurable_rbac.sql` derives scope rows
+from active memberships and department/team values. The owner response must
+resolve that migration-design conflict; the draft does not implement this
+recommendation.
 
 Decision: `PENDING`  Owner role: Authorization authority  Owner identity: ______  Date: ______  Scope: ______  Approval reference/signature: ______  
 Rationale/evidence: ______________________________________  Downstream: 035 and delegation validation.

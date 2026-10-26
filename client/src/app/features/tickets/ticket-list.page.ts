@@ -18,7 +18,7 @@ export class TicketListPage implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
   private readonly changeDetector = inject(ChangeDetectorRef);
   private suppressRouteRefresh = false;
-  readonly filters = this.formBuilder.nonNullable.group({ number: [''], status: [''], type: [''], createdFrom: [''], createdTo: [''] });
+  readonly filters = this.formBuilder.nonNullable.group({ number: [''], status: [''], type: [''], priorityId: [''], serviceId: [''], categoryId: [''], requestTypeId: [''], clientId: [''], departmentId: [''], teamId: [''], assigneeId: [''], createdFrom: [''], createdTo: [''] });
   result: TicketSearchPage | null = null;
   loading = false;
   error: 'unauthorized' | 'forbidden' | 'server' | 'network' | null = null;
@@ -32,7 +32,7 @@ export class TicketListPage implements OnInit {
         this.suppressRouteRefresh = false;
         return;
       }
-      this.filters.patchValue({ number: query.get('number') ?? '', status: query.get('status') ?? '', type: query.get('type') ?? '', createdFrom: query.get('createdFrom') ?? '', createdTo: query.get('createdTo') ?? '' });
+      this.filters.patchValue({ number: query.get('number') ?? '', status: query.get('status') ?? '', type: query.get('type') ?? '', priorityId: query.get('priorityId') ?? '', serviceId: query.get('serviceId') ?? '', categoryId: query.get('categoryId') ?? '', requestTypeId: query.get('requestTypeId') ?? '', clientId: query.get('clientId') ?? '', departmentId: query.get('departmentId') ?? '', teamId: query.get('teamId') ?? '', assigneeId: query.get('assigneeId') ?? '', createdFrom: query.get('createdFrom') ?? '', createdTo: query.get('createdTo') ?? '' });
       const parsedPage = Number(query.get('page'));
       this.page = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
       this.changeDetector.markForCheck();
@@ -42,7 +42,7 @@ export class TicketListPage implements OnInit {
 
   get listQueryParams(): Record<string, string | number | null> {
     const raw = this.filters.getRawValue();
-    return { number: raw.number || null, status: raw.status || null, type: raw.type || null, createdFrom: raw.createdFrom || null, createdTo: raw.createdTo || null, page: this.page > 1 ? this.page : null };
+    return { number: raw.number || null, status: raw.status || null, type: raw.type || null, priorityId: raw.priorityId || null, serviceId: raw.serviceId || null, categoryId: raw.categoryId || null, requestTypeId: raw.requestTypeId || null, clientId: raw.clientId || null, departmentId: raw.departmentId || null, teamId: raw.teamId || null, assigneeId: raw.assigneeId || null, createdFrom: raw.createdFrom || null, createdTo: raw.createdTo || null, page: this.page > 1 ? this.page : null };
   }
 
   load(): void { this.loading = true; this.error = null; this.changeDetector.markForCheck(); this.api.search(this.toCriteria()).pipe(finalize(() => { this.loading = false; this.changeDetector.markForCheck(); })).subscribe({ next: value => { this.result = value; this.changeDetector.markForCheck(); }, error: value => this.handleError(value) }); }
@@ -57,7 +57,7 @@ export class TicketListPage implements OnInit {
     void this.router.navigate([], { relativeTo: this.route, queryParams: this.listQueryParams, replaceUrl: true });
     this.load();
   }
-  private toCriteria(): TicketSearchFilters { const raw = this.filters.getRawValue(); return { number: raw.number || undefined, status: this.numberOrUndefined(raw.status), type: this.numberOrUndefined(raw.type), createdFrom: raw.createdFrom ? new Date(`${raw.createdFrom}T00:00:00Z`).toISOString() : undefined, createdTo: raw.createdTo ? new Date(`${raw.createdTo}T23:59:59.999Z`).toISOString() : undefined, page: this.page, pageSize: this.pageSize }; }
+  private toCriteria(): TicketSearchFilters { const raw = this.filters.getRawValue(); return { number: raw.number || undefined, status: this.numberOrUndefined(raw.status), type: this.numberOrUndefined(raw.type), priorityId: this.numberOrUndefined(raw.priorityId), serviceId: this.numberOrUndefined(raw.serviceId), categoryId: this.numberOrUndefined(raw.categoryId), requestTypeId: this.numberOrUndefined(raw.requestTypeId), clientId: this.numberOrUndefined(raw.clientId), departmentId: this.numberOrUndefined(raw.departmentId), teamId: this.numberOrUndefined(raw.teamId), assigneeId: this.numberOrUndefined(raw.assigneeId), createdFrom: raw.createdFrom ? new Date(`${raw.createdFrom}T00:00:00Z`).toISOString() : undefined, createdTo: raw.createdTo ? new Date(`${raw.createdTo}T23:59:59.999Z`).toISOString() : undefined, page: this.page, pageSize: this.pageSize }; }
   private numberOrUndefined(value: string): number | undefined { return value === '' ? undefined : Number(value); }
   private handleError(error: unknown): void { const status = error instanceof HttpErrorResponse ? error.status : 0; this.error = status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : status >= 500 ? 'server' : status === 0 ? 'network' : 'server'; this.changeDetector.markForCheck(); }
 }

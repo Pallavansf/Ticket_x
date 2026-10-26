@@ -78,7 +78,16 @@ exit requirements.
 **Transition increment:** the specialized Incident/Problem status entry point
 now rejects invalid closure, reopening, and cancelled-ticket mutations using
 the same aggregate invariants as the shared lifecycle methods. The transition
-matrix and regression evidence remain source-only; Stage 2 stays `PARTIAL`.
+matrix now covers denied Resolved, Closed, and Reopened targets with status,
+domain-event, and no-save assertions. The Incident/Problem subtype-row
+ordering gap and all provider evidence remain unresolved; Stage 2 stays
+`PARTIAL`.
+
+The owner-selected intended V1 preflight contract now has a read-only
+`ITicketLifecycleService` seam. Incident and Problem status operations invoke
+that seam before subtype-row mutation and retain the existing in-transaction
+transition check. Provider rollback, concurrency, and audit durability remain
+unverified; Stage 2 stays `PARTIAL`.
 
 **Dependencies:** Stage 1 traceability, approved schema/baseline, provider
 validation, and recovery/TOCTOU decisions.
@@ -210,7 +219,9 @@ replaced; independent source work should continue where safe.
 
 ## Immediate next action
 
-Advance Stage 2 with a focused core lifecycle/workflow implementation inventory
-and the highest-value unblocked source-level gap. Do not start another
-provider-preflight sprint or live database operation.
+Validate the owner-selected Incident/Problem preflight seam with provider-backed
+transaction and concurrency evidence once formal contract attribution and
+provider authorization are supplied. Until then, do not claim rollback,
+commit-outcome, or lifecycle API acceptance, and do not start a live database
+operation.
 
