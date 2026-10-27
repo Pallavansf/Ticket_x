@@ -1,9 +1,35 @@
 using PA.Tickets.Infrastructure.Foundations;
+using SystemRoleDisplayLabelPolicy = PA.Tickets.Application.Foundations.SystemRoleDisplayLabelPolicy;
 
 namespace PA.Tickets.Domain.Tests;
 
 public sealed class RoleAuthorizationPolicyTests
 {
+    [Theory]
+    [InlineData("ADMIN", " Manager ", "Manager")]
+    [InlineData("ADMIN_HEAD", "Manager Admin", "Manager Admin")]
+    public void Only_fixed_role_display_labels_are_configurable_without_changing_role_codes(
+        string code, string label, string expected) =>
+        Assert.Equal(expected, SystemRoleDisplayLabelPolicy.ValidateAndNormalize(code, true, label));
+
+    [Theory]
+    [InlineData("USER", true)]
+    [InlineData("SUPER_ADMIN", true)]
+    [InlineData("SPECTATOR", true)]
+    [InlineData("ADMIN_HEAD", false)]
+    [InlineData("admin", true)]
+    public void Other_or_ambiguous_role_identities_cannot_change_display_labels(string code, bool systemRole) =>
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            SystemRoleDisplayLabelPolicy.ValidateAndNormalize(code, systemRole, "New label"));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Empty_system_role_display_labels_are_rejected(string? label) =>
+        Assert.Throws<ArgumentException>(() =>
+            SystemRoleDisplayLabelPolicy.ValidateAndNormalize("ADMIN", true, label));
+
     [Theory]
     [InlineData("USER", "BUSINESS", false, true)]
     [InlineData("USER", "READ_ONLY", true, true)]

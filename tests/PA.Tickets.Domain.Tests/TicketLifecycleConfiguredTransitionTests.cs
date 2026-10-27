@@ -309,6 +309,67 @@ public sealed class TicketLifecycleConfiguredTransitionTests
     }
 
     [Fact]
+    public async Task Missing_waiting_reason_preserves_state_events_and_persistence()
+    {
+        var setup = CreateService(allowed: true, waitingReasons: new TestWaitingReasonCatalog());
+        var now = DateTimeOffset.UtcNow;
+        setup.Ticket.Classify(1, 2, 3, 4, 50, now);
+        setup.Ticket.Route(5, "T-1-WI-001", 10, 20, 50, now);
+        var item = Assert.Single(setup.Ticket.WorkItems);
+        setup.Ticket.StartExecution(item, 60, 50, now);
+        var originalEvents = setup.Ticket.UncommittedEvents.ToArray();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            setup.Service.WaitAsync(1, item.Id, new WaitingRequest(" ", null, null, null), 50, CancellationToken.None));
+
+        Assert.Equal(TicketStatus.InProgress, setup.Ticket.Status);
+        Assert.Equal("IN_PROGRESS", item.Status);
+        Assert.Null(item.WaitingStartedAt);
+        Assert.Equal(originalEvents, setup.Ticket.UncommittedEvents);
+        Assert.Equal(0, setup.Repository.SaveCount);
+    }
+
+    [Fact]
+    public async Task Unknown_waiting_reason_preserves_state_events_and_persistence()
+    {
+        var setup = CreateService(allowed: true, waitingReasons: new TestWaitingReasonCatalog());
+        var now = DateTimeOffset.UtcNow;
+        setup.Ticket.Classify(1, 2, 3, 4, 50, now);
+        setup.Ticket.Route(5, "T-1-WI-001", 10, 20, 50, now);
+        var item = Assert.Single(setup.Ticket.WorkItems);
+        setup.Ticket.StartExecution(item, 60, 50, now);
+        var originalEvents = setup.Ticket.UncommittedEvents.ToArray();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            setup.Service.WaitAsync(1, item.Id, new WaitingRequest("UNKNOWN", null, null, null), 50, CancellationToken.None));
+
+        Assert.Equal(TicketStatus.InProgress, setup.Ticket.Status);
+        Assert.Equal("IN_PROGRESS", item.Status);
+        Assert.Null(item.WaitingStartedAt);
+        Assert.Equal(originalEvents, setup.Ticket.UncommittedEvents);
+        Assert.Equal(0, setup.Repository.SaveCount);
+    }
+
+    [Fact]
+    public async Task Valid_waiting_reason_transitions_and_saves_once()
+    {
+        var setup = CreateService(allowed: true, waitingReasons: new TestWaitingReasonCatalog());
+        var now = DateTimeOffset.UtcNow;
+        setup.Ticket.Classify(1, 2, 3, 4, 50, now);
+        setup.Ticket.Route(5, "T-1-WI-001", 10, 20, 50, now);
+        var item = Assert.Single(setup.Ticket.WorkItems);
+        setup.Ticket.StartExecution(item, 60, 50, now);
+
+        var result = await setup.Service.WaitAsync(1, item.Id, new WaitingRequest("CUSTOMER", "awaiting response", null, null), 50, CancellationToken.None);
+
+        Assert.Equal(TicketStatus.Waiting, result.Status);
+        Assert.Equal("WAITING", item.Status);
+        Assert.Equal("CUSTOMER", item.WaitingFor);
+        Assert.Single(setup.Ticket.UncommittedEvents, x => x.Action == "WORK_ITEM_WAITING");
+        Assert.Equal(1, setup.Repository.SaveCount);
+    }
+
+    [Fact]
     public async Task Denied_resume_transition_preserves_waiting_state_events_and_persistence()
     {
         var setup = CreateService(allowed: false);
@@ -335,6 +396,49 @@ public sealed class TicketLifecycleConfiguredTransitionTests
         Assert.Null(item.WaitingResumedAt);
         Assert.Equal(originalEvents, setup.Ticket.UncommittedEvents);
         Assert.Equal(0, setup.Repository.SaveCount);
+    }
+
+    [Fact]
+    public async Task Ticket_read_exposes_active_waiting_age_and_start_time()
+    {
+        var started = new DateTimeOffset(2026, 10, 27, 9, 0, 0, TimeSpan.Zero);
+        var now = started.AddMinutes(65);
+        var setup = CreateService(allowed: true, clock: new FixedTimeProvider(now));
+        setup.Ticket.Classify(1, 2, 3, 4, 50, started);
+        setup.Ticket.Route(5, "T-1-WI-001", 10, 20, 50, started);
+        var item = Assert.Single(setup.Ticket.WorkItems);
+        setup.Ticket.StartExecution(item, 60, 50, started);
+        setup.Ticket.Wait(item, "CUSTOMER", "awaiting response", null, null, 50, started);
+
+        var result = await setup.Service.GetAsync(1, 50, CancellationToken.None);
+
+        var view = Assert.Single(result.WorkItems);
+        Assert.Equal(started, view.WaitingStartedAt);
+        Assert.Equal(65, view.WaitingAgeMinutes);
+        Assert.Equal(0, view.WaitingMinutes);
+        Assert.Equal(0, setup.Repository.SaveCount);
+    }
+
+    [Fact]
+    public async Task Valid_resume_follows_matrix_and_persists_accumulated_waiting_age()
+    {
+        var started = new DateTimeOffset(2026, 10, 27, 9, 0, 0, TimeSpan.Zero);
+        var resumed = started.AddMinutes(75);
+        var setup = CreateService(allowed: true, clock: new FixedTimeProvider(resumed));
+        setup.Ticket.Classify(1, 2, 3, 4, 50, started);
+        setup.Ticket.Route(5, "T-1-WI-001", 10, 20, 50, started);
+        var item = Assert.Single(setup.Ticket.WorkItems);
+        setup.Ticket.StartExecution(item, 60, 50, started);
+        setup.Ticket.Wait(item, "CUSTOMER", "awaiting response", null, null, 50, started);
+
+        var result = await setup.Service.ResumeAsync(1, item.Id, 50, CancellationToken.None);
+
+        Assert.Equal(TicketStatus.InProgress, result.Status);
+        Assert.Equal("IN_PROGRESS", item.Status);
+        Assert.Equal(75, item.WaitingMinutes);
+        Assert.Null(item.WaitingStartedAt);
+        Assert.Single(setup.Ticket.UncommittedEvents, x => x.Action == "WORK_ITEM_RESUMED");
+        Assert.Equal(1, setup.Repository.SaveCount);
     }
 
     [Fact]
@@ -391,7 +495,7 @@ public sealed class TicketLifecycleConfiguredTransitionTests
         Assert.Equal(code, TicketStatusCodes.ToConfigurationCode(status));
     }
 
-    private static (TicketLifecycleService Service, TestTicketRepository Repository, TestStatusConfiguration Configuration, TestTicketAccessAuthorizer Authorizer, Ticket Ticket) CreateService(bool? allowed, Exception? saveFailure = null, TestTicketAccessAuthorizer? authorizer = null, TestTicketIdentityGenerator? identities = null, IWaitingReasonCatalog? waitingReasons = null)
+    private static (TicketLifecycleService Service, TestTicketRepository Repository, TestStatusConfiguration Configuration, TestTicketAccessAuthorizer Authorizer, Ticket Ticket) CreateService(bool? allowed, Exception? saveFailure = null, TestTicketAccessAuthorizer? authorizer = null, TestTicketIdentityGenerator? identities = null, IWaitingReasonCatalog? waitingReasons = null, TimeProvider? clock = null)
     {
         var ticket = Ticket.Create(1, "T-1", TicketType.Request, "Subject", null, 50, 50, DateTimeOffset.UtcNow);
         var repository = new TestTicketRepository(ticket) { SaveFailure = saveFailure };
@@ -411,7 +515,7 @@ public sealed class TicketLifecycleConfiguredTransitionTests
             null!,
             null!,
             null!,
-            TimeProvider.System,
+            clock ?? TimeProvider.System,
             null!,
             null!,
             configuration,
@@ -483,8 +587,17 @@ public sealed class TicketLifecycleConfiguredTransitionTests
 
     private sealed class TestWaitingReasonCatalog : IWaitingReasonCatalog
     {
-        public Task<WaitingReasonDefinition> ResolveAsync(string code, DateTimeOffset at, CancellationToken ct) =>
-            Task.FromResult(new WaitingReasonDefinition(1, code, true, at.AddMinutes(-1), null, true, false, false, false, new HashSet<TicketStatus> { TicketStatus.InProgress }));
+        public Task<WaitingReasonDefinition> ResolveAsync(string code, DateTimeOffset at, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(code)) throw new ArgumentException("Waiting reason is required.");
+            if (code != "CUSTOMER") throw new InvalidOperationException("Waiting reason is not configured.");
+            return Task.FromResult(new WaitingReasonDefinition(1, code, true, at.AddMinutes(-1), null, true, false, false, false, new HashSet<TicketStatus> { TicketStatus.InProgress }));
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 
     private sealed class TestTicketAccessAuthorizer(long? allowedExecutor = null, bool denyMutation = false) : ITicketAccessAuthorizer

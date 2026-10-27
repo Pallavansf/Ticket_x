@@ -35,6 +35,34 @@ public sealed class RealtimeTicketSubscriptionAuthorizerTests
         Assert.False(await missing.CanSubscribeAsync(4, 25, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Denies_subscription_when_actor_lacks_ticket_read_scope()
+    {
+        var authorization = new StubAuthorization(false);
+        var sut = new RealtimeTicketSubscriptionAuthorizer(
+            new StubScopeReader(new RealtimeTicketScope(25, 8, null, null, null)),
+            authorization,
+            new StubFeatureSwitches(true));
+
+        Assert.False(await sut.CanSubscribeAsync(4, 25, CancellationToken.None));
+        Assert.Equal("TICKET_READ", authorization.Permission);
+        Assert.NotNull(authorization.Resource);
+    }
+
+    [Fact]
+    public async Task Unavailable_feature_configuration_prevents_authorization_and_subscription()
+    {
+        var authorization = new StubAuthorization(true);
+        var sut = new RealtimeTicketSubscriptionAuthorizer(
+            new StubScopeReader(new RealtimeTicketScope(25, 8, null, null, null)),
+            authorization,
+            new UnavailableFeatureSwitches());
+
+        await Assert.ThrowsAsync<FeatureSwitchUnavailableException>(
+            () => sut.CanSubscribeAsync(4, 25, CancellationToken.None));
+        Assert.Null(authorization.Resource);
+    }
+
     private sealed class StubScopeReader(RealtimeTicketScope? result) : IRealtimeTicketScopeReader
     {
         public Task<RealtimeTicketScope?> GetAsync(long ticketId, CancellationToken ct) => Task.FromResult(result);
@@ -61,6 +89,15 @@ public sealed class RealtimeTicketSubscriptionAuthorizerTests
             LastCheck = (code, departmentId);
             return Task.FromResult(enabled);
         }
+        public Task<IReadOnlyCollection<FeatureSwitchView>> ListAsync(long actor, long? departmentId, CancellationToken ct) => throw new NotSupportedException();
+        public Task<FeatureSwitchView> SetAsync(long actor, string code, long? departmentId, bool value, int? expectedRowVersion, string? reason, CancellationToken ct) => throw new NotSupportedException();
+        public Task<IReadOnlyCollection<FeatureAvailabilityView>> ForActorAsync(long actor, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class UnavailableFeatureSwitches : IFeatureSwitchService
+    {
+        public Task<bool> IsEnabledAsync(string code, long? departmentId, CancellationToken ct) =>
+            throw new FeatureSwitchUnavailableException(new InvalidOperationException("configuration unavailable"));
         public Task<IReadOnlyCollection<FeatureSwitchView>> ListAsync(long actor, long? departmentId, CancellationToken ct) => throw new NotSupportedException();
         public Task<FeatureSwitchView> SetAsync(long actor, string code, long? departmentId, bool value, int? expectedRowVersion, string? reason, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyCollection<FeatureAvailabilityView>> ForActorAsync(long actor, CancellationToken ct) => throw new NotSupportedException();

@@ -159,6 +159,19 @@
         </form>
       }
 
+      @if (isSystemRoleLabelConfigurable(role)) {
+        <form class="form-grid details-form" (ngSubmit)="saveSystemRoleDisplayLabel()">
+          <label>Display label
+            <input name="systemRoleDisplayLabel" [(ngModel)]="editRoleName" required maxlength="200">
+          </label>
+          <label class="span-two">Reason
+            <textarea name="systemRoleLabelReason" [(ngModel)]="roleLabelReason" required maxlength="1000"></textarea>
+          </label>
+          <button type="submit" [disabled]="busy() || !editRoleName.trim() || !roleLabelReason.trim()">Save display label</button>
+          <p class="span-two">Only the display label changes. Authorization continues to use the immutable role code.</p>
+        </form>
+      }
+
       <div class="permission-heading">
         <div>
           <h3>Module permissions</h3>

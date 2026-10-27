@@ -91,3 +91,11 @@ The standalone adapters `postgresql-schema.sql` and `postgresql-slice1-schema.sq
 - Existing audit-maintenance functions/triggers and their seed token need security-owner review; their definitions are included as DDL while the token row is in the separate data draft.
 - The base script includes idempotent/conditional definitions. That does not prove equivalence with any live catalog.
 - Column ownership was assigned from the source definitions and the standalone migrations; no schema execution or provider validation was used.
+
+## Source-artifact recheck (2026-10-27)
+
+Read-only checks in this task reproduced all three output SHA-256 values above. A static comparison of distinct `CREATE TABLE` names in the combined foundational input and the DDL review extract found 40 names in each, with no missing or extra names. The data-stage draft has four top-level `INSERT` statements and no `CREATE`, `ALTER`, or `DROP` statements. The only line-start `INSERT`/`DELETE` statements found in the DDL extract are inside the retained audit-maintenance function body, not standalone seed statements. The original foundational, standalone schema, and 028/029 migration files have no worktree diff; no consumer references the review artifacts outside the review evidence.
+
+These checks validate hashes and text structure only. No PostgreSQL parser, server, database, or SQL execution was used; syntax and provider compatibility remain unverified. Migration history remains `UNKNOWN`.
+
+D01 remains `PENDING`. The owner-decision pack's proposed baseline is the historically verified artifact at hash `4F4EC0066DC62AAA61C75DB67177A25D152FBF6484CCB4711A942FD1DC58EC19`, while this review split was generated from the current expanded source artifact at hash `21D7F96A02A079CB9870DAFA1F4FF24602CE6251F314F0E3C9D2E4B72B98CE64`. This review does not select or adopt either baseline; the explicit owner decision and compatibility evidence remain outstanding.

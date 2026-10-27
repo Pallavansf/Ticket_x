@@ -79,6 +79,7 @@ describe('ShellComponent', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.shell__chat')).toBeNull();
     expect(fixture.nativeElement.querySelector('app-message-center')).toBeNull();
+    expect(fixture.nativeElement.querySelector('a[href="/app/messages"]')).toBeNull();
   });
 
   it('fails closed and hides feature navigation when availability cannot be loaded', () => {

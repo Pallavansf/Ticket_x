@@ -30,11 +30,13 @@ if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Te
         PA.Tickets.Infrastructure.Foundations.DeterministicContentScanner>();
 }
 ApiSecurityConfiguration.AddAuthenticationAndCors(builder.Services, builder.Configuration, builder.Environment);
-builder.Services.AddSingleton<PA.Tickets.Application.Foundations.IRealtimePublisher,
+builder.Services.AddScoped<PA.Tickets.Application.Foundations.IRealtimePublisher,
     PA.Tickets.Api.Realtime.SignalRRealtimePublisher>();
 builder.Services.AddScoped<PA.Tickets.Api.Realtime.IRealtimeTicketScopeReader,
     PA.Tickets.Api.Realtime.RealtimeTicketScopeReader>();
 builder.Services.AddScoped<PA.Tickets.Api.Realtime.RealtimeTicketSubscriptionAuthorizer>();
+builder.Services.AddScoped<PA.Tickets.Api.Realtime.RealtimeTicketDeliveryFilter>();
+builder.Services.AddSingleton<PA.Tickets.Api.Realtime.RealtimeConnectionSubscriptions>();
 
 var app = builder.Build();
 app.Use(async (context, next) =>

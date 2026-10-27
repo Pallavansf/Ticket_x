@@ -1,15 +1,17 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ChatComponent } from './chat.component';
 import { FeatureSwitchesService } from '../../core/feature-switches.service';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 
 describe('ChatComponent', () => {
   let fixture: ComponentFixture<ChatComponent>;
+  const switches = { availability: vi.fn() };
 
   beforeEach(async () => {
+    switches.availability.mockReset().mockReturnValue(of([{ code: 'CHAT', enabled: true }]));
     await TestBed.configureTestingModule({
       imports: [ChatComponent],
-      providers: [{ provide: FeatureSwitchesService, useValue: { availability: () => of([{ code: 'CHAT', enabled: true }]) } }]
+      providers: [{ provide: FeatureSwitchesService, useValue: switches }]
     }).compileComponents();
     fixture = TestBed.createComponent(ChatComponent);
   });
@@ -32,6 +34,13 @@ describe('ChatComponent', () => {
     expect(fixture.nativeElement.querySelector('[aria-label="Attach a file"]').disabled).toBe(true);
     expect(fixture.nativeElement.querySelector('[aria-label="Mention someone"]').disabled).toBe(true);
     expect(fixture.nativeElement.querySelector('button[type="submit"]').disabled).toBe(true);
+    expect(fixture.nativeElement.querySelector('[role="group"][aria-label="Chat actions unavailable"]')).not.toBeNull();
+    expect(fixture.nativeElement.textContent).toContain('disabled until an approved Chat service is connected');
+  });
+
+  it('places initial keyboard focus on the direct-message close control', () => {
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(fixture.nativeElement.querySelector('[aria-label="Close direct messages"]'));
   });
 
   it('closes the direct-message drawer on Escape but keeps work-item chat open', () => {
@@ -49,8 +58,13 @@ describe('ChatComponent', () => {
   });
 
   it('hides the conversation surface when the Chat switch is disabled', () => {
+    switches.availability.mockReturnValue(of([{ code: 'CHAT', enabled: false }]));
     fixture.detectChanges();
-    fixture.componentInstance.available.set(false);
+    expect(fixture.nativeElement.querySelector('.chat')).toBeNull();
+  });
+
+  it('fails closed when feature availability cannot be loaded', () => {
+    switches.availability.mockReturnValue(throwError(() => new Error('offline')));
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.chat')).toBeNull();
   });

@@ -1,0 +1,34 @@
+<section class="history" aria-labelledby="history-title">
+  <a class="back-link" routerLink="/app">Back to workspace</a>
+  <header class="history__header">
+    <div><p class="eyebrow">YOUR UPDATES</p><h1 id="history-title">Notification history</h1><p class="lede">Review saved notifications for your account.</p></div>
+    <span class="live-state" role="status" aria-live="polite">Live notification alerts unavailable</span>
+  </header>
+
+  @if (availabilityLoading) { <p class="state" role="status">Checking Message Center availability…</p> }
+  @else if (availabilityError) { <div class="state state--error" role="alert">Message Center availability could not be checked. Notifications remain hidden until availability can be confirmed.<button type="button" (click)="checkAvailability()">Try again</button></div> }
+  @else if (!enabled) { <p class="state" role="status">Message Center is disabled or unavailable.</p> }
+  @else if (!client) { <p class="state" role="status">Notification history is unavailable because no inbox service is connected.</p> }
+  @else {
+    <div class="toolbar">
+      <label for="history-search">Search notifications</label><input id="history-search" type="search" [(ngModel)]="search" (ngModelChange)="searchChanged()" placeholder="Search by notification text" />
+      <label for="history-state">Read state</label><select id="history-state" [ngModel]="state" (ngModelChange)="setState($event)"><option value="all">All</option><option value="unread">Unread</option><option value="read">Read</option></select>
+    </div>
+    @if (actionError) { <p class="action-error" role="alert">That notification could not be updated. Your view has not been changed.</p> }
+    @if (loading) { <p class="state" role="status">Loading notification history…</p> }
+    @else if (error) { <div class="state state--error" role="alert">Notification history could not be loaded.<button type="button" (click)="load()">Try again</button></div> }
+    @else if (items.length === 0) { <p class="state">No notifications match this view.</p> }
+    @else {
+      <ul class="items">@for (item of items; track item.id) {
+        <li [class.item--unread]="!item.read">
+          <div class="item__copy"><p class="item__meta">{{ item.category }} · {{ item.createdAt | date:'medium' }} · {{ item.read ? 'Read' : 'Unread' }}</p><h2>{{ item.title }}</h2><p>{{ item.summary }}</p></div>
+          <div class="item__actions">
+            @if (item.deepLink) { <a [routerLink]="item.deepLink">Open linked item</a> }
+            @if (!item.read) { <button type="button" (click)="markRead(item)">Mark read</button> }
+            @if (!item.archived) { <button type="button" (click)="archive(item)">Archive</button> }
+          </div>
+        </li>
+      }</ul>
+    }
+  }
+</section>

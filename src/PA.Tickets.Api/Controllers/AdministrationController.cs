@@ -29,6 +29,8 @@ public sealed class AdministrationController(IAdministrationService administrati
     [HttpPost("teams/{id:long}/active")] public Task<AdministrationTeam> SetTeamActive(long id, ActiveRequest request, CancellationToken ct) => administration.SetTeamActiveAsync(Actor(), id, request.Active, ct);
 
     [HttpGet("roles")] public Task<IReadOnlyCollection<AdministrationRole>> Roles(CancellationToken ct) => administration.ListRolesAsync(Actor(), ct);
+    [HttpPut("roles/{id:long}/display-label")] public Task<AdministrationRole> UpdateSystemRoleDisplayLabel(long id, UpdateSystemRoleDisplayLabelRequest request, CancellationToken ct) =>
+        administration.UpdateSystemRoleDisplayLabelAsync(Actor(), id, request.DisplayLabel, request.Reason, ct);
     [HttpPost("roles")] public Task<AdministrationRole> CreateRole(CreateCustomRoleRequest request, CancellationToken ct) =>
         administration.CreateCustomRoleAsync(Actor(), request.Code, request.Name, request.Description, ct);
     [HttpPut("roles/{id:long}")] public Task<AdministrationRole> UpdateRole(long id, UpdateCustomRoleRequest request, CancellationToken ct) =>
@@ -135,6 +137,9 @@ public sealed record CreateCustomRoleRequest(
 public sealed record UpdateCustomRoleRequest(
     [Required, StringLength(200, MinimumLength = 1)] string Name,
     [StringLength(1000)] string? Description);
+public sealed record UpdateSystemRoleDisplayLabelRequest(
+    [Required, StringLength(200, MinimumLength = 1)] string DisplayLabel,
+    [Required, StringLength(1000, MinimumLength = 1)] string Reason);
 public sealed record RoleReasonRequest([Required, StringLength(1000, MinimumLength = 1)] string Reason);
 public sealed record SetRolePermissionRequest(
     bool Granted,

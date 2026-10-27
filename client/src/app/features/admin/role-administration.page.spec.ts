@@ -62,6 +62,35 @@ describe('RoleAdministrationPage', () => {
     expect(http.put).not.toHaveBeenCalled();
   });
 
+  it('updates only the approved built-in display label with an audit reason', async () => {
+    const adminRole = {
+      id: 12, code: 'ADMIN', name: 'Admin', description: null, systemRole: true, active: true
+    };
+    const page = fixture.componentInstance;
+    page.roles.set([adminRole]);
+    page.selectedRoleId.set(adminRole.id);
+    page.editRoleName = 'Manager';
+    page.roleLabelReason = 'Align approved display label';
+
+    await page.saveSystemRoleDisplayLabel();
+
+    expect(http.put).toHaveBeenCalledWith(
+      expect.stringContaining(`/roles/${adminRole.id}/display-label`),
+      { displayLabel: 'Manager', reason: 'Align approved display label' }
+    );
+    expect(page.notice()).toContain('role code and permissions are unchanged');
+  });
+
+  it('does not expose the built-in label editor for protected unrelated role codes', () => {
+    const page = fixture.componentInstance;
+    page.roles.set([{ ...role, code: 'SPECTATOR', systemRole: true }]);
+    page.selectedRoleId.set(role.id);
+    fixture.detectChanges();
+
+    expect(page.isSystemRoleLabelConfigurable(page.selectedRole()!)).toBe(false);
+    expect(fixture.nativeElement.textContent).not.toContain('Save display label');
+  });
+
   it('submits a sensitive permission grant as a proposal instead of granting directly', async () => {
     const page = fixture.componentInstance;
     const highImpactPermission = {

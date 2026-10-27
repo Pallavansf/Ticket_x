@@ -106,6 +106,7 @@ public interface IAdministrationService
     Task<AdministrationTeam> SetTeamActiveAsync(long actor, long teamId, bool active, CancellationToken ct);
     Task<IReadOnlyCollection<AdministrationRole>> ListRolesAsync(long actor, CancellationToken ct);
     Task<IReadOnlyCollection<AdministrationPermission>> ListPermissionsAsync(long actor, CancellationToken ct);
+    Task<AdministrationRole> UpdateSystemRoleDisplayLabelAsync(long actor, long roleId, string displayLabel, string reason, CancellationToken ct);
     Task<AdministrationRole> CreateCustomRoleAsync(long actor, string code, string name, string? description, CancellationToken ct);
     Task<AdministrationRole> UpdateCustomRoleAsync(long actor, long roleId, string name, string? description, CancellationToken ct);
     Task DeactivateCustomRoleAsync(long actor, long roleId, string reason, CancellationToken ct);

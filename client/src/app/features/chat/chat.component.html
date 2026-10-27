@@ -26,7 +26,8 @@
   <form class="chat__composer" aria-label="Message composer" (submit)="$event.preventDefault()">
     <label class="visually-hidden" for="chat-message">Write a message</label>
     <textarea id="chat-message" rows="2" placeholder="Chat is unavailable" disabled></textarea>
-    <div class="chat__actions">
+    <div class="chat__actions" role="group" aria-label="Chat actions unavailable">
+      <p class="chat__action-help">Sending, attachments, and mentions are disabled until an approved Chat service is connected.</p>
       <button type="button" disabled aria-label="Attach a file">Attach file</button>
       <button type="button" disabled aria-label="Mention someone">Mention</button>
       <button type="submit" disabled>Send</button>

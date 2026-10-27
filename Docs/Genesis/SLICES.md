@@ -218,7 +218,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Objective:** make "set to waiting" require a reason from the waiting-reason catalogue and a waiting-on party (person, role, team, approval request, external); add a per-reason pauses-SLA flag (`N_PAUSES_SLA`, default on for waiting on requester or approval); expose waiting age; link an open approval request to the correct state. Do not add a second pending state.
 - **Acceptance:** waiting without a reason is rejected and leaves state, events and saves unchanged; resume follows the matrix; waiting age is queryable; the SLA clock honors the flag.
 - **Tests:** extend the waiting/resume tests; add negative tests for a missing reason and an unknown waiting-on.
-- **Status:** `PARTIAL`. **Next:** inspect the `WaitAsync` signature, the API contract and the waiting-reason table, then list the exact gaps.
+- **Status:** `PARTIAL`. `WaitAsync` resolves active/effective reason codes from the persistent catalogue before mutating; missing/unknown reason and denied transitions preserve state/events/saves; `ResumeAsync` uses the lifecycle transition matrix; per-reason SLA pause flags gate the durable pause operation; the ticket read contract exposes waiting start and live total age. The focused lifecycle suite has 38 passing tests. The distinct waiting-on party is not represented by the request, persistence model or API, approval-request linkage is not established by this lifecycle path, SLA pause/resume is not automatically coordinated with waiting transitions, and provider evidence is absent. **Next:** obtain/confirm the waiting-on party contract and define lifecycle-to-SLA/approval coordination before adding those behaviors.
 
 #### S2-07 — Identifier lookup and validation
 - **FRs:** FR-035 · `SRC` · **Dependencies:** none (DD-04)
@@ -243,7 +243,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Reuse first:** `RoleAuthorizationPolicy.cs`, `SpectatorMutationPolicy.cs`, migrations 031–037, `CONFIGURABLE_RBAC_DESIGN.md`, the role-administration page.
 - **Objective:** (1) configurable display labels for `ADMIN` and `ADMIN_HEAD` (reuse an existing name column or add a nullable one in a draft migration); (2) the new permission codes in §3 added to the allowlist and the reviewed seed draft; (3) role classes: fixed roles keep identity and core capabilities, configurable roles are editable inside ceilings; (4) default grants per FRD §4.4; (5) no code rename and no behavior change to existing authorization.
 - **Acceptance:** unknown permission codes fail closed; fixed-role core grants cannot be removed; configurable roles can be edited inside ceilings; Spectator deny precedence still holds; role changes are audited; existing authorization tests still pass.
-- **Status:** `PARTIAL` (system roles, ceilings and the Spectator invariant exist).
+- **Status:** `PARTIAL` — the existing `S_ROLE_NAME` value now supports audited label updates for `ADMIN` and `ADMIN_HEAD` only; authorization remains permission-based and the codes are unchanged. The service policy, Angular editor, 32 focused role-policy tests, 19 role-editor specs and API/client builds provide source/unit evidence. Permission additions and the exact default grant matrix remain subject to D04/D08; provider persistence/audit evidence and fixed-role core-grant retention under provider-backed administration remain unverified.
 
 #### S3-03 — Effective grants, dates and revocation
 - **FRs:** FR-008, FR-009 · `SRC` · **Status:** `PARTIAL`; provider race tests `BLOCKED`.
@@ -304,7 +304,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Reuse first:** the RBAC module/action catalogue, `OperationalMetadataAdministrationController` and migration 022, the Angular admin area.
 - **Objective:** switches for Message Center, Chat, chat attachments, Announcements and each channel, with global and department levels. Disabled features are hidden, their jobs stop and the API returns one consistent error, and the data is kept for Super Admin and auditors.
 - **Acceptance:** state persists across restart; disabled-feature calls are denied; UI hides the feature; changes are authorized and audited; missing state fails closed.
-- **Status:** `PARTIAL` — persisted switch repository/API, CONFIG_ADMIN authorization, hash-chain audit integration, Angular administration and caller availability UI gating are implemented; existing communication enqueue/retry/delivery paths are gated. PostgreSQL persistence and audit durability are unverified; Message Center, Chat, chat-attachment and announcement backend consumers remain absent. Migration 022 is Oracle syntax and remains untouched; PostgreSQL migration 040 is a review draft only.
+- **Status:** `PARTIAL` — persisted switch repository/API, CONFIG_ADMIN authorization, hash-chain audit integration, Angular administration and caller availability UI gating are implemented; existing communication enqueue/retry/delivery paths are gated. REALTIME is now included in the generic source catalog and PostgreSQL migration 040 review-draft constraint; this does not establish database persistence. PostgreSQL persistence and audit durability are unverified; Message Center, Chat, chat-attachment and announcement backend consumers remain absent. Migration 022 is Oracle syntax and remains untouched; migration 040 is a review draft only.
 
 #### S4-07 — Real-time hub (SignalR)
 - **FRs:** FR-024, FR-005, FR-006 · `SRC` + `UI` · **Dependencies:** none (DD-13)
@@ -312,7 +312,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Objective:** an authenticated hub, single instance and in-process, behind a publisher abstraction. It pushes minimal events (id, type, change kind, version) to scope-derived groups after commit, using the durable job boundary. REST stays the only write path; only ephemeral typing/presence signals come from clients. Add `@microsoft/signalr` to the client as a **new dependency**: pin the version and justify it in the result (SOP §5). Confirm the server hub needs no extra package.
 - **Acceptance:** unauthenticated connection rejected; out-of-scope subscription denied; Spectator cannot mutate; no event for a rolled-back commit; duplicate and out-of-order events handled by version; revoked access ends the subscription; tokens never logged.
 - **Tests:** hosted tests for connect, subscribe and denial; unit tests for the publisher.
-- **Status:** `PARTIAL` — authenticated `/hubs/updates` negotiation, self and authorization-checked ticket groups, a minimal ticket-event publisher abstraction, an Angular SignalR connection-state wrapper, and a shell status indicator are implemented. Three hosted/policy .NET tests and nine Angular service/shell tests pass. No mutation methods are exposed. Event production is not wired to committed domain events or the durable worker; role/scope revocation propagation and the `REALTIME` feature switch are not available in S4-06, so delivery remains disabled/unverified pending those contracts.
+- **Status:** `PARTIAL` — authenticated `/hubs/updates` negotiation, self and authorization-checked ticket groups, a minimal ticket-event publisher abstraction, an Angular SignalR connection-state wrapper, and a shell status indicator are implemented. This task's ten focused .NET subscription/authorization/hosted-DI/revocation-filter tests pass; the prior nine Angular service/shell tests pass. No mutation methods are exposed. The REALTIME switch is actor-effective and cataloged; persisted configuration remains unverified and missing or unavailable configuration denies hub use. The publisher is scoped to its scoped dependencies. Tracked ticket subscriptions are reauthorized on publish; disabled REALTIME removes their in-process/group membership, and lost ticket authorization is removed before sends. No production publish call site exists, so this is not evidence of event-triggered or bounded revocation in operation. Event production is not wired to committed domain events or the durable worker; browser event delivery remains unverified.
 
 #### S4-08 — Message Center backend
 - **FRs:** FR-031, FR-012, FR-024 · `SRC` + `SCH` · **Dependencies:** S4-06 (DD-08)
@@ -326,7 +326,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Reuse first:** `client/src/app/layout/shell.*`, `core/http`, existing admin pages for style.
 - **Objective:** top-bar bell with unread badge, dropdown panel, history page with filters and search, preferences page, toast for live items, connection-state indicator.
 - **Acceptance:** Vitest specs for loading, empty, error, read, archive, filter and preference states; works with real-time off.
-- **Status:** `PARTIAL` - top-bar bell, unread badge, dropdown, search/read-state filtering, read/archive actions, preference controls, and explicit unavailable/live-off states are implemented behind a frontend client port. Six component specs pass. The inbox API adapter, full history and preferences pages, and live toast/push contract remain absent; no backend contract was invented.
+- **Status:** `PARTIAL` - top-bar bell, unread badge, dropdown, search/read-state filtering, read/archive actions, preference controls, explicit unavailable/live-off states, and a lazy `/app/messages` notification-history route are implemented behind the existing frontend client port. The history view fails closed when Message Center is disabled or availability cannot be checked, and updates read/archive presentation only after client success. Seven history-page specs, six existing panel specs, and six shell specs pass. The inbox API adapter and full preferences page remain absent; live notification toast/push remains unavailable without an approved event contract. No backend contract was invented.
 
 #### S4-10 — Chat backend
 - **FRs:** FR-032, FR-010, FR-024 · `SRC` + `SCH` · **Dependencies:** S4-06, S4-07 (DD-09)
@@ -339,7 +339,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **FRs:** FR-032 · `UI` · **Dependencies:** none for unit work
 - **Objective:** work-item chat panel, direct-message drawer, attachment and mention pickers, typing indicator, message states.
 - **Acceptance:** Vitest specs for send, receive, edit, delete tombstone, attachment errors, disabled-feature and offline states.
-- **Status:** `PARTIAL` — work-item and direct-message shells render explicit unavailable states, keep unsupported actions disabled, and respect Chat availability. Drawer open/close now includes Escape handling and focus placement/return. REST message operations, history, edits/deletion, attachment handling, mentions, typing/presence and offline delivery behavior remain unavailable without approved Chat and real-time contracts; no behavior is simulated.
+- **Status:** `PARTIAL` — work-item and direct-message shells render explicit unavailable states, keep unsupported actions disabled with an accessible explanation, and fail closed when Chat availability is disabled or cannot be loaded. Drawer open/close includes Escape handling and focus placement/return. Six Chat specs, six ticket-detail specs, and six shell specs pass; the direct-message layout has a mobile breakpoint. REST message operations, history, edits/deletion, attachment handling, mentions, typing/presence and offline delivery behavior remain unavailable without approved Chat and real-time contracts; no behavior is simulated.
 
 #### S4-12 — Notification channels, preferences and delivery states
 - **FRs:** FR-012, FR-031 · `SRC` · **Dependencies:** S4-08
@@ -445,7 +445,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **FRs:** FR-002, FR-016, FR-039 · `SCH` · **Dependencies:** none
 - **Objective:** inventory objects the source maps (`TicketsDbContext`, `ExecutionDbContext`, raw SQL) that have no PostgreSQL DDL, starting with `PA_TICKETS_INCIDENT` and the root 014–016 and 027 foundations; write review drafts in the PostgreSQL style (§2). Migration 026 stays excluded.
 - **Acceptance:** an inventory of "mapped but missing" objects; a draft for each with prerequisites guarded; hashes recorded; nothing executed.
-- **Status:** `PARTIAL` - five mapped ticket-type relations and a guarded 039 review draft are recorded in `Docs/reconciliation/proposed/postgresql/S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md`. Root 014-016 are already PostgreSQL syntax despite their root location; 027 is Oracle syntax, while its mapped ticket columns are present in the baseline draft. Communication schema reconciliation, raw-SQL inventory, and provider compatibility remain unverified.
+- **Status:** `PARTIAL` - five mapped ticket-type relations and a guarded 039 review draft are recorded in `Docs/reconciliation/proposed/postgresql/S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md`; a source-level raw SQL call-site/object inventory was added, but is not an exhaustive generated-SQL inventory. Root 014-016 are already PostgreSQL syntax despite their root location; 027 is Oracle syntax, while its mapped ticket columns are present in the baseline draft. Communication schema reconciliation and provider compatibility remain unverified.
 
 #### S5-10 — Build the PostgreSQL schema on the E2E target
 - **FRs:** FR-016, NFR-003, NFR-010 · `PRV` · **Dependencies:** S5-01 signed, S5-03 PASS, S5-08, S5-09
@@ -556,11 +556,11 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S2-03 | FR-005, 006 | PARTIAL | Slices 46, 50 | Provider | — | |
 | S2-04 | FR-002, 005, 006 | BLOCKED | Bring-up: 1 pass, 1 fail (`S_MODULE_CODE`) | S5-10 | Rerun after schema build | |
 | S2-05 | FR-001–006, 015 | BLOCKED | — | S2-04 | — | |
-| S2-06 | FR-026 | PARTIAL | `WAITING`, migration 004 | — | Inspect `WaitAsync` | |
+| S2-06 | FR-026, FR-003, FR-011 | PARTIAL | Catalogue-validated `WaitAsync`, matrix-guarded resume, per-reason SLA pause gate, active waiting age on ticket read; 38 focused lifecycle tests pass | Provider acceptance; distinct waiting-on party contract; lifecycle/SLA and approval integration | Define missing party and orchestration contracts; retain `PARTIAL` | |
 | S2-07 | FR-035 | PARTIAL | Exact lookup, FR-035 alphabet validation, 19 focused tests including hosted auth/error contract | PostgreSQL/deployed uniqueness and generation evidence | Verify under authorized provider acceptance | |
 | S2-08 | FR-039 | PARTIAL | Root 014–016 sources | S5-09 for provider | Gap list | |
 | S3-01 | FR-007, 015 | PARTIAL | Hosted auth tests | Provider | — | |
-| S3-02 | FR-008, 020 | PARTIAL | Role policy, RBAC drafts | — | Labels, permissions, classes | |
+| S3-02 | FR-008, FR-020 | PARTIAL | Restricted audited ADMIN/ADMIN_HEAD label update on existing role-name column; fail-closed label policy; 32 role-policy tests, 19 editor specs, API/client builds | Provider persistence/audit; permission catalogue and grant matrix under pending D04/D08; provider-backed core-grant protections | Resolve owner decisions before permission seed/grant changes; retain `PARTIAL` | |
 | S3-03 | FR-008, 009 | PARTIAL | Grant tests | Provider races | — | |
 | S3-04 | FR-009 | PARTIAL | Delegation tests | Provider | — | |
 | S3-05 | FR-007–009 | BLOCKED | — | S5-10 | — | |
@@ -574,12 +574,12 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S4-03 | FR-012 | PARTIAL | Orchestrator | Provider | See S4-12 | |
 | S4-04 | FR-013 | PARTIAL | Reporting source | Provider | — | |
 | S4-05 | FR-014, 015 | PARTIAL | Vitest suite | Browser E2E | — | |
-| S4-06 | FR-019, 028 | PARTIAL | Switch API/UI, audited updates, communication channel gate; focused source tests | PostgreSQL persistence, missing Chat/Message Center/announcement consumers | 040 review draft only; no DB access | |
-| S4-07 | FR-024 | PARTIAL | Authenticated hub negotiation; own-user and fail-closed permission-checked ticket subscription; minimal publisher abstraction; Angular reconnect/state service and shell indicator; 3 .NET and 9 Angular focused tests | No committed-event producer/durable scheduler path; no REALTIME switch; connection revocation propagation and browser event delivery unverified | Coordinate real-time switch and event/revocation contracts, then wire post-commit durable publication and run hosted/browser acceptance | |
+| S4-06 | FR-019, 028 | PARTIAL | Switch API/UI, audited updates, communication channel gate, REALTIME catalog entry and 040 draft constraint; focused source tests | PostgreSQL persistence/audit durability; Chat/Message Center/announcement consumers | 040 remains review-only; no DB access | |
+| S4-07 | FR-024 | PARTIAL | Authenticated hub negotiation; actor-effective REALTIME gate; own-user and fail-closed permission-checked ticket subscription; publish-time recipient filter removes disabled/unauthorized tracked connections; 10 focused .NET subscription/authorization/hosted-DI/revocation-filter tests; prior 9 Angular tests | No committed-event producer/durable scheduler path; DB-backed REALTIME configuration, bounded connection revocation and browser event delivery unverified | Resolve FR-024 event/job mapping; then wire publication only after commit and run hosted/browser acceptance | |
 | S4-08 | FR-031 | NOT STARTED | Notification table | S4-06 | Inspect notification code | |
-| S4-09 | FR-031 | PARTIAL | Bell/dropdown, unread count, read/archive/filter/preferences controls; 6 component specs | Inbox API, full history/preferences pages, live push/toast | Implement only against the S4-08 contract when available | |
+| S4-09 | FR-031 | PARTIAL | Bell/dropdown, unread count, read/archive/filter/preferences controls, `/app/messages` history route with loading/empty/error/disabled/unavailable states; 7 history + 6 panel + 6 shell specs; Angular build | Concrete inbox API adapter, full preferences page, approved notification push/toast contract and backend acceptance | Implement only against approved S4-08/FR-024 contracts when available | |
 | S4-10 | FR-032 | NOT STARTED | None | S4-06, S4-07 | — | |
-| S4-11 | FR-032 | PARTIAL | Work-item and direct-message unavailable UI; switch-hidden and API-unavailable states; disabled unsupported actions; Escape close and focus return; focused Angular specs | Contract-backed send/receive/edit/delete, attachment errors, mentions, persistence, realtime and offline delivery | Safe UI work only until approved Chat contracts exist |
+| S4-11 | FR-032 | PARTIAL | Work-item and direct-message unavailable UI; fail-closed switch states; disabled actions with accessible explanation; Escape close and focus placement/return; 6 Chat + 6 ticket-detail + 6 shell specs | Contract-backed send/receive/edit/delete, attachment errors, mentions, persistence, realtime and offline delivery | Safe UI work only until approved Chat contracts exist |
 | S4-12 | FR-012, 031 | PARTIAL | Orchestrator | S4-08 | After S4-08 | |
 | S4-13 | FR-038 | NOT STARTED | Tables only | S4-08 | — | |
 | S4-14 | FR-025 | PARTIAL | Migrations 011/019/032 | S2-06 | — | |
@@ -596,8 +596,8 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S5-05 | FR-002, 005, 006 | BLOCKED | — | S5-01 | — | |
 | S5-06 | — | RETIRED | DD-06 | — | Do not work | |
 | S5-07 | FR-016, 019–032 | NOT STARTED | — | `SCH` drafts | After drafts exist | |
-| S5-08 | FR-016 | PARTIAL | DDL/data review drafts, ownership matrix, hashes | No SQL execution; syntax/provider validation absent | Review S5-08_BASELINE_SPLIT_REVIEW.md | |
-| S5-09 | FR-002, 016, 039 | PARTIAL | Five mapped ticket-type gaps, guarded 039 draft | Communication/raw-SQL/provider review remains | Review S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md | |
+| S5-08 | FR-016 | PARTIAL | DDL/data review drafts, ownership matrix, output hashes rechecked; 40/40 CREATE TABLE names match source; data draft has no object-creation statements | D01 baseline adoption is PENDING; no SQL execution/parser; syntax/provider validation absent; migration history UNKNOWN | Review S5-08_BASELINE_SPLIT_REVIEW.md | |
+| S5-09 | FR-002, 016, 039 | PARTIAL | Five mapped ticket-type gaps, guarded 039 draft, source-level raw SQL call-site/object inventory rechecked | Communication schema ordering/compatibility, dynamic sequence resolution, generated/provider SQL and provider review remain | Review S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md | |
 | S5-10 | FR-016 | BLOCKED | — | S5-01, 03, 08, 09 | — | |
 | S6-01…S6-06 | various | BLOCKED | — | S5-10 | — | |
 | S7-01, 02, 04 | FR-018, NFR | NOT VERIFIED | — | — | — | |

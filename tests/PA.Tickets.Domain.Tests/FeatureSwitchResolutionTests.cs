@@ -20,12 +20,25 @@ public sealed class FeatureSwitchResolutionTests
     }
 
     [Fact]
+    public void Actor_availability_requires_an_enabled_matching_switch()
+    {
+        Assert.True(FeatureSwitchResolution.IsEnabledForActor("REALTIME",
+            [new FeatureAvailabilityView("MESSAGE_CENTER", true), new FeatureAvailabilityView("REALTIME", true)]));
+        Assert.False(FeatureSwitchResolution.IsEnabledForActor("REALTIME",
+            [new FeatureAvailabilityView("REALTIME", false)]));
+        Assert.False(FeatureSwitchResolution.IsEnabledForActor("REALTIME", []));
+        Assert.False(FeatureSwitchResolution.IsEnabledForActor("REALTIME",
+            [new FeatureAvailabilityView("UNKNOWN_SWITCH", true)]));
+    }
+
+    [Fact]
     public void SwitchCatalogueContainsOnlyTheGovernedCategories()
     {
         Assert.Equal(new[]
         {
             "ANNOUNCEMENTS", "CHANNEL_EMAIL", "CHANNEL_INAPP", "CHANNEL_PUSH", "CHANNEL_WHATSAPP",
-            "CHAT", "CHAT_ATTACHMENTS", "MESSAGE_CENTER"
+            "CHAT", "CHAT_ATTACHMENTS", "MESSAGE_CENTER", "REALTIME"
         }, FeatureSwitchCodes.All.Keys.OrderBy(x => x, StringComparer.Ordinal));
+        Assert.Equal("Real-time updates", FeatureSwitchCodes.All["REALTIME"]);
     }
 }

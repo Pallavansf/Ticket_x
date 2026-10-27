@@ -9,16 +9,19 @@ namespace PA.Tickets.Api.Realtime;
 [Authorize]
 public sealed class RealtimeHub(
     RealtimeTicketSubscriptionAuthorizer subscriptions,
-    IFeatureSwitchService featureSwitches) : Hub
+    IFeatureSwitchService featureSwitches,
+    RealtimeConnectionSubscriptions connectionSubscriptions) : Hub
 {
     public override async Task OnConnectedAsync()
     {
-        if (!await featureSwitches.IsEnabledAsync("REALTIME", null, Context.ConnectionAborted))
+        var userId = ActorId();
+        var availability = await featureSwitches.ForActorAsync(userId, Context.ConnectionAborted);
+        if (!FeatureSwitchResolution.IsEnabledForActor("REALTIME", availability))
         {
             Context.Abort();
             return;
         }
-        var userId = ActorId();
+        connectionSubscriptions.Connected(Context.ConnectionId, userId);
         await Groups.AddToGroupAsync(Context.ConnectionId, RealtimeGroups.User(userId), Context.ConnectionAborted);
         await base.OnConnectedAsync();
     }
@@ -31,12 +34,24 @@ public sealed class RealtimeHub(
             throw new HubException("Subscription denied.");
 
         await Groups.AddToGroupAsync(Context.ConnectionId, RealtimeGroups.Ticket(ticketId), Context.ConnectionAborted);
+        if (!connectionSubscriptions.Subscribe(Context.ConnectionId, ticketId))
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, RealtimeGroups.Ticket(ticketId), Context.ConnectionAborted);
+            throw new HubException("Subscription denied.");
+        }
     }
 
     public Task UnsubscribeTicket(long ticketId)
     {
         if (ticketId <= 0) throw new HubException("Subscription denied.");
+        connectionSubscriptions.Unsubscribe(Context.ConnectionId, ticketId);
         return Groups.RemoveFromGroupAsync(Context.ConnectionId, RealtimeGroups.Ticket(ticketId), Context.ConnectionAborted);
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        connectionSubscriptions.Disconnected(Context.ConnectionId);
+        await base.OnDisconnectedAsync(exception);
     }
 
     private long ActorId()

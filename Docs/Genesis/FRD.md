@@ -328,7 +328,7 @@ The system shall be composed of modules that an authorized administrator can ena
 - **Screen-based feature switches:** authorized administrators enable or disable features from an admin screen, for example the Message Center, Chat, attachments in chat, Announcements, and each notification channel (in-app, email, WhatsApp, push). Defaults and overrides can apply at global, department and role scope (default levels: global and department; role-level overrides are deferred — DD-10). Disabling a feature hides its UI, stops its jobs and denies its API calls, and **preserves existing data and history**; by default users no longer see a disabled feature, and its data is retained and available to Super Admin and auditors (DD-10).
 - Module enable/disable and configuration changes are authorized by permission and audited. Which modules cannot be disabled (for example Tickets, Administration, Audit) is TBD.
 - Acceptance: module state is persisted and survives restart; disabled-module API calls are denied; UI hides unavailable modules; per-role module visibility is enforced server-side; changes are audited; fail closed when module state is missing.
-- Status: **NOT STARTED** — module permissions exist in the RBAC catalogue; screen-based feature switches do not (repository inspection).
+- Status: **PARTIAL** — feature-switch catalog, global/department resolution, CONFIG_ADMIN-protected API and Angular administration exist in source; database persistence, restart behavior, audit durability and full consumer enforcement remain unverified or incomplete.
 
 ### FR-020 — Role and permission administration
 The system shall let authorized administrators (default: Super Admin) create, rename, clone, deactivate and assign custom roles, and map permissions per module to roles.
@@ -400,7 +400,7 @@ The system shall push live updates to authenticated Angular clients through an A
   - Disabled module or unavailable hub degrades gracefully in the UI.
   - Logs contain no tokens or secrets.
   - Real-time evidence is labelled by layer: unit, integration/provider, or browser E2E.
-- Status: **PARTIAL** — an authenticated hub endpoint, authorization-checked ticket subscription source, and Angular connection-state client exist. Post-commit event production/durable scheduling, the REALTIME switch, active-session revocation, and browser event delivery remain unimplemented or unverified.
+- Status: **PARTIAL** — an authenticated hub endpoint, authorization-checked ticket subscription source, and Angular connection-state client exist. REALTIME is now present in the generic source catalog and PostgreSQL review-draft constraint; persistence remains unverified, so missing or unavailable configuration continues to deny hub use. The publisher is scoped to match IFeatureSwitchService, but no production publish call site exists. Post-commit event production/durable scheduling, active-session revocation, and browser event delivery remain unimplemented or unverified.
 
 ### FR-025 — Approval and acknowledgement requests
 A work item may require approval or acknowledgement from one or more people before it proceeds.
@@ -449,7 +449,7 @@ The product shall be fully configurable by authorized administrators without cod
 - **Bounds:** the lifecycle invariants (FR-003) and the five work-item types (FR-001) stay fixed unless the owner approves a change. Whether admins may define new statuses or types is TBD.
 - **Authorization:** configuration is permission-gated per area. Whether configuration is global or per department is TBD. Super Admin has all.
 - Acceptance: configuration round trip; invalid configuration is rejected; missing configuration fails closed; changes are audited; existing items are unaffected.
-- Status: **PARTIAL** — catalogue, workflow, approval, SLA, communication and operational-metadata administration exist in source; feature switches and use-case profiles do not.
+- Status: **PARTIAL** — catalogue, workflow, approval, SLA, communication, operational-metadata administration and feature-switch source/API/UI exist; PostgreSQL persistence and audit durability remain unverified, and use-case profiles remain undefined.
 
 ### FR-029 — Cross-department work
 Tickets and tasks can be raised for, assigned to, or routed to another department, and approvals can be requested from other departments.

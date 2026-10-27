@@ -22,7 +22,7 @@
           </div></li>
         }</ul>
       }
-      <footer class="panel__footer"><button type="button" (click)="showPreferences()">Notification preferences</button></footer>
+      <footer class="panel__footer"><a routerLink="/app/messages">View notification history</a><button type="button" (click)="showPreferences()">Notification preferences</button></footer>
       @if (preferencesOpen) {
         <section class="preferences" aria-label="Notification preferences"><h3>Preferences</h3>
           @if (preferencesError) { <p role="alert">Preferences are unavailable while the inbox service is disconnected.</p> }

@@ -174,6 +174,7 @@ export class RoleAdministrationPage {
   newRoleDescription = '';
   editRoleName = '';
   editRoleDescription = '';
+  roleLabelReason = '';
   changeReason = '';
   deactivateCode = '';
   selectedUserId: number | null = null;
@@ -576,6 +577,32 @@ export class RoleAdministrationPage {
         description: this.editRoleDescription.trim() || null
       }));
       this.notice.set('Custom role details saved.');
+      await this.load();
+      await this.selectRole(role.id);
+    } catch (error) {
+      this.error.set(this.errorMessage(error));
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  isSystemRoleLabelConfigurable(role: Role): boolean {
+    return role.systemRole && ['ADMIN', 'ADMIN_HEAD'].includes(role.code);
+  }
+
+  async saveSystemRoleDisplayLabel(): Promise<void> {
+    const role = this.selectedRole();
+    if (!role || !this.isSystemRoleLabelConfigurable(role) || !this.editRoleName.trim() ||
+        !this.roleLabelReason.trim() || this.busy()) return;
+    this.busy.set(true);
+    this.error.set('');
+    try {
+      await firstValueFrom(this.http.put<Role>(`${this.api}/roles/${role.id}/display-label`, {
+        displayLabel: this.editRoleName.trim(),
+        reason: this.roleLabelReason.trim()
+      }));
+      this.notice.set(`Display label updated for ${role.code}. The role code and permissions are unchanged.`);
+      this.roleLabelReason = '';
       await this.load();
       await this.selectRole(role.id);
     } catch (error) {

@@ -299,6 +299,30 @@ public sealed class AdministrationService(
             .Select(x => new AdministrationPermission(x.Id, x.Code, x.Name, x.Description, x.ModuleCode, x.ActionCode, x.ScopeClass, x.SecurityClass, x.ReadOnly, x.Active)).ToArray();
     }
 
+    public async Task<AdministrationRole> UpdateSystemRoleDisplayLabelAsync(
+        long actor, long roleId, string displayLabel, string reason, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        await authorization.EnsurePermissionAsync(actor, "ROLE_PERMISSION_ADMIN", null, ct);
+        var role = await db.AdministrationRoles.SingleOrDefaultAsync(x => x.Id == roleId && x.Active, ct)
+            ?? throw new KeyNotFoundException("Active role was not found.");
+        var label = SystemRoleDisplayLabelPolicy.ValidateAndNormalize(role.Code, role.SystemRole, displayLabel);
+        reason = Required(reason, nameof(reason), 1000);
+        if (string.Equals(role.Name, label, StringComparison.Ordinal))
+        {
+            await tx.CommitAsync(ct);
+            return new(role.Id, role.Code, role.Name, role.Description, role.SystemRole, role.Active);
+        }
+
+        var oldLabel = role.Name;
+        role.Name = label;
+        await AddAuditAsync($"ROLE:{role.Id}", "SYSTEM_ROLE_DISPLAY_LABEL_UPDATED", actor,
+            $"{role.Code}:{label}", ct, reason, $"{role.Code}:{oldLabel}");
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+        return new(role.Id, role.Code, role.Name, role.Description, role.SystemRole, role.Active);
+    }
+
     public async Task<AdministrationRole> CreateCustomRoleAsync(long actor, string code, string name, string? description, CancellationToken ct)
     {
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);

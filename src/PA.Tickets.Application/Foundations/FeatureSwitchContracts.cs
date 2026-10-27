@@ -11,7 +11,8 @@ public static class FeatureSwitchCodes
         ["CHANNEL_INAPP"] = "In-app notifications",
         ["CHANNEL_EMAIL"] = "Email notifications",
         ["CHANNEL_WHATSAPP"] = "WhatsApp notifications",
-        ["CHANNEL_PUSH"] = "Push notifications"
+        ["CHANNEL_PUSH"] = "Push notifications",
+        ["REALTIME"] = "Real-time updates"
     };
 }
 
@@ -38,6 +39,9 @@ public interface IFeatureSwitchService
 public static class FeatureSwitchResolution
 {
     public static bool IsEnabled(bool? departmentOverride, bool? globalValue) => departmentOverride ?? globalValue ?? false;
+
+    public static bool IsEnabledForActor(string code, IEnumerable<FeatureAvailabilityView> availability) =>
+        availability.Any(feature => string.Equals(feature.Code, code, StringComparison.Ordinal) && feature.Enabled);
 }
 
 public sealed class FeatureDisabledException() : Exception("The requested feature is currently unavailable.")
