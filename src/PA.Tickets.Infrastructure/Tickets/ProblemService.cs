@@ -73,7 +73,7 @@ public sealed class ProblemService(
         var ticket = await db.Tickets.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ticketId, ct)
             ?? throw new KeyNotFoundException($"Ticket {ticketId} was not found.");
         var domainTicket = ToTicket(ticket);
-        await authorizer.EnsureCanAssignAsync(actor, new AuthorizationResource(domainTicket.Id, domainTicket.CurrentDepartmentId, domainTicket.CurrentTeamId, domainTicket.ClientId, domainTicket.CurrentAssignee), ticket.CurrentDepartmentId, ticket.CurrentTeamId, assignee, ct);
+        await authorizer.EnsureCanAssignAsync(actor, new AuthorizationResource(domainTicket.Id, domainTicket.CurrentDepartmentId, domainTicket.CurrentTeamId, domainTicket.ClientId, domainTicket.CurrentAssignee, RequesterUserId: domainTicket.RequestedBy), ticket.CurrentDepartmentId, ticket.CurrentTeamId, assignee, ct);
         return await MutateAsync(ticketId, actor, "PROBLEM_ASSIGNED", (ticket, row, now) =>
         {
             if (assignee <= 0) throw new ArgumentException("A valid assignee is required.");

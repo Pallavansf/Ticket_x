@@ -60,5 +60,6 @@ public sealed class PersistentWorkflowInstanceCreationService(
     }
 
     private static AuthorizationResource Resource(TicketRow ticket) =>
-        new(ticket.Id, ticket.CurrentDepartmentId, ticket.CurrentTeamId, ticket.ClientId, ticket.CurrentAssignee);
+        new(ticket.Id, ticket.CurrentDepartmentId, ticket.CurrentTeamId, ticket.ClientId, ticket.CurrentAssignee,
+            RequesterUserId: ticket.RequestedBy);
 }

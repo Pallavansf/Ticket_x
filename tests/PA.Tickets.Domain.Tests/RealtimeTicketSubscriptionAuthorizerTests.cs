@@ -8,13 +8,13 @@ public sealed class RealtimeTicketSubscriptionAuthorizerTests
     [Fact]
     public async Task Requires_enabled_module_and_ticket_read_scope_before_subscription()
     {
-        var scopes = new StubScopeReader(new RealtimeTicketScope(25, 8, 13, 19, 31));
+        var scopes = new StubScopeReader(new RealtimeTicketScope(25, 8, 13, 19, 31, 7));
         var authorization = new StubAuthorization(true);
         var switches = new StubFeatureSwitches(true);
         var sut = new RealtimeTicketSubscriptionAuthorizer(scopes, authorization, switches);
 
         Assert.True(await sut.CanSubscribeAsync(4, 25, CancellationToken.None));
-        Assert.Equal(new AuthorizationResource(25, 8, 13, 19, 31), authorization.Resource);
+        Assert.Equal(new AuthorizationResource(25, 8, 13, 19, 31, RequesterUserId: 7), authorization.Resource);
         Assert.Equal("TICKET_READ", authorization.Permission);
         Assert.Equal(("REALTIME", (long?)8), switches.LastCheck);
     }

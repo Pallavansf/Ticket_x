@@ -15,6 +15,21 @@ internal static class RoleAuthorizationPolicy
     public static bool AllowsPermission(string role, bool systemRole, string securityClass, string actionCode, bool readOnly) =>
         ApplicationRoleAuthorizationPolicy.AllowsPermission(role, systemRole, securityClass, actionCode, readOnly);
 
+    public static bool IsCanonicalRoleCode(string? role) =>
+        ApplicationRoleAuthorizationPolicy.IsCanonicalRoleCode(role);
+
+    public static bool IsCanonicalPermissionCode(string? permission) =>
+        ApplicationRoleAuthorizationPolicy.IsCanonicalPermissionCode(permission);
+
+    public static bool AllowsPermissionCode(string role, string permissionCode) =>
+        ApplicationRoleAuthorizationPolicy.AllowsPermissionCode(role, permissionCode);
+
+    public static void EnsurePermissionRevocationAllowed(string role, string permissionCode) =>
+        ApplicationRoleAuthorizationPolicy.EnsurePermissionRevocationAllowed(role, permissionCode);
+
+    public static bool IsFixedCorePermission(string role, string permissionCode) =>
+        ApplicationRoleAuthorizationPolicy.IsFixedCorePermission(role, permissionCode);
+
     public static bool IsLegacyAdministratorPermission(string permission) =>
         ApplicationRoleAuthorizationPolicy.IsLegacyAdministratorPermission(permission);
 

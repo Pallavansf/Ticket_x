@@ -113,7 +113,7 @@ public sealed class IncidentService(
         var ticket = await db.Tickets.AsNoTracking().SingleOrDefaultAsync(x => x.Id == ticketId, ct)
             ?? throw new KeyNotFoundException($"Ticket {ticketId} was not found.");
         var domainTicket = ToTicket(ticket);
-        await authorizer.EnsureCanAssignAsync(actor, new AuthorizationResource(domainTicket.Id, domainTicket.CurrentDepartmentId, domainTicket.CurrentTeamId, domainTicket.ClientId, domainTicket.CurrentAssignee), ticket.CurrentDepartmentId, ticket.CurrentTeamId, commanderUserId, ct);
+        await authorizer.EnsureCanAssignAsync(actor, new AuthorizationResource(domainTicket.Id, domainTicket.CurrentDepartmentId, domainTicket.CurrentTeamId, domainTicket.ClientId, domainTicket.CurrentAssignee, RequesterUserId: domainTicket.RequestedBy), ticket.CurrentDepartmentId, ticket.CurrentTeamId, commanderUserId, ct);
         await EnsureMutateAsync(ticketId, actor, ct);
         return await ExecuteMutationAsync(ticketId, actor, async now =>
         {

@@ -139,6 +139,14 @@ aliases with a mapping; defer RBAC upgrades.
 **Owner identity:** ______  **Date:** ______  **Scope:** ______  **Approval reference/signature:** ______  
 **Blocks:** Migrations 031, 034, 037 and authorization acceptance.
 
+**Owner-delegated policy selection (implementation guidance; not formal approval):**
+canonical uppercase role and permission codes, explicit remediation of duplicate
+or alias identities, and fail-closed handling of ambiguous authorization facts.
+This direction does not authorize database operations, identity mutation, or
+automatic adoption of a catalogue draft. The formal `Decision` remains
+`PENDING` until the attribution fields above are completed by the authorized
+owner.
+
 ### D05 — Historical grant validity *(prerequisite)*
 
 **Question:** What effective-date/backfill policy applies to existing grants,
@@ -215,6 +223,82 @@ report.
 **Rationale/reference:** No approval found.  
 **Owner identity:** ______  **Date:** ______  **Scope:** ______  **Approval reference/signature:** ______  
 **Blocks:** Migration 037 and RBAC acceptance.
+
+**Owner-delegated policy selection (implementation guidance; not formal approval):**
+preserve the five built-in system roles and use the FRD v0.7 §4 capability
+matrix and permission ceilings as the intended role policy. Reconcile each
+concrete permission-code grant against the canonical catalogue before
+implementation. This direction does not approve every grant in migration 031,
+authorize database operations, or permit role/grant provisioning. The formal
+`Decision` remains `PENDING` until the attribution fields above are completed
+by the authorized owner.
+
+**Selected policy clarification for D08 (implementation guidance; not formal
+approval):** preserve `USER`, `ADMIN`, `ADMIN_HEAD`, `SUPER_ADMIN`, and
+`SPECTATOR`. USER may create and respond to own/assigned work, with no default
+assignment authority. ADMIN operates within authorized team/department scope;
+ADMIN_HEAD operates within effective delegation and approved group scope.
+SUPER_ADMIN uses explicit, audited grants from the approved permission
+catalogue. SPECTATOR remains read-only and receives no default export.
+`TICKET_UPDATE` alone is insufficient to authorize assignment or approval;
+assignment requires the FR-021 authority rules and approval requires designated
+approver and separation-of-duties checks. Fixed-role core protections apply
+only after the exact code mapping is approved. Missing or ambiguous
+authorization facts fail closed. This clarification records selected policy
+direction only: it does not approve migration 031's proposed grants, create
+grants, or change the formal D08 status.
+
+**Decision text prepared for authorized approval (formal status remains
+`PENDING`):**
+
+> Approve the five canonical built-in role identities `USER`, `ADMIN`,
+> `ADMIN_HEAD`, `SUPER_ADMIN`, and `SPECTATOR`, and approve the role-to-permission
+> mapping in the attached D08 grant matrix as the built-in default policy.
+> USER's `TICKET_READ` and `TICKET_UPDATE` grants are limited to own/assigned
+> work and creation/response actions; they confer no assignment authority, and
+> `TICKET_UPDATE` alone does not authorize assignment or approval. ADMIN grants
+> apply only within authorized team/department scope. ADMIN_HEAD grants apply
+> only within effective delegation and approved group scope. SUPER_ADMIN
+> receives explicit, audited grants for each approved catalogue permission.
+> SPECTATOR is read-only and has no default export grant. Assignment requires
+> the approved FR-021 rule and scope checks; approval requires designated
+> approver and separation-of-duties checks. Fixed-role core grants may not be
+> removed only after their exact permission-code mapping is approved. Unknown,
+> missing, or ambiguous authorization facts fail closed. This approval does
+> not authorize database changes, seed execution, or adoption of migration
+> 031's proposed grants.
+
+**Formal attribution required to record approval:** authorized Security/RBAC
+approver identity; UTC decision date; decision scope and exact approved grant
+matrix/version; approval reference or signature; rationale; and evidence
+references. Until those fields are supplied, the formal D08 `Decision` remains
+`PENDING`.
+
+**S3-02 source reconciliation (2026-10-27; evidence, not formal D08 approval):**
+The intended permission-code mapping used for source work is:
+
+| Role | Proposed codes | Core/configuration treatment | Scope and source finding | D08 status |
+|---|---|---|---|---|
+| `USER` | Proposed `TICKET_READ`, `TICKET_UPDATE` | Intended fixed core, but not protected as mandatory yet | S3-04 source now enforces requester-or-assignee ticket reads/updates and pre-pagination search scope. Selected D08 guidance denies default assignment authority; `TICKET_UPDATE` alone does not authorize assignment or approval. Exact action scope and fixed-core mapping remain unapproved. | Pending |
+| `ADMIN` | Proposed `TICKET_READ`, `TICKET_UPDATE`, `USER_ADMIN`, `ROLE_ADMIN` | Fixed core; source revocation guard implemented for these four codes | Ticket resources and administration targets use effective department/team scopes; assignment remains subject to FR-021 rules, and approval requires designation and separation-of-duties checks. | Proposed from FRD §4 and selected guidance; formal decision pending |
+| `ADMIN_HEAD` | Proposed `TICKET_READ`, `TICKET_UPDATE`, `USER_ADMIN`, `ROLE_ADMIN`; further grants configurable within ceilings | Configurable, not fixed core | Effective delegated/team scope exists and has source tests. Assignment remains subject to FR-021 rules; approval requires designation and separation-of-duties checks. Exact administration ceilings remain unapproved. | Pending |
+| `SUPER_ADMIN` | All 36 codes in the canonical catalogue table above: `APPROVAL_ADMIN`, `APPROVAL_PUBLISH`, `APPROVAL_READ`, `AUDIT_EXPORT`, `AUDITOR_VIEW`, `CATALOGUE_PUBLISH`, `CATEGORY_ADMIN`, `CATEGORY_READ`, `CLIENT_ADMIN`, `COMMUNICATION_ADMIN`, `COMMUNICATION_PUBLISH`, `COMMUNICATION_READ`, `COMMUNICATION_RETIRE`, `CONFIG_ADMIN`, `NOTIFICATION_ADMIN`, `NOTIFICATION_PUBLISH`, `NOTIFICATION_READ`, `NOTIFICATION_RETIRE`, `REQUEST_TYPE_ADMIN`, `REQUEST_TYPE_READ`, `ROLE_ADMIN`, `ROLE_PERMISSION_ADMIN`, `ROLE_SCOPE_ADMIN`, `SERVICE_ADMIN`, `SERVICE_READ`, `SLA_ADMIN`, `SLA_PUBLISH`, `SLA_READ`, `SLA_RETIRE`, `TICKET_ADMIN`, `TICKET_READ`, `TICKET_UPDATE`, `USER_ADMIN`, `WORKFLOW_ADMIN`, `WORKFLOW_PUBLISH`, `WORKFLOW_READ` | Intended fixed core only for explicitly approved catalogue codes; not encoded as “all active” | Source uses explicit permission and organization-scope checks; canonical catalogue is not formally approved. No dynamic revocation guard can infer approval from active rows. | Pending catalogue and grant approval |
+| `SPECTATOR` | `APPROVAL_READ`, `AUDITOR_VIEW`, `CATEGORY_READ`, `COMMUNICATION_READ`, `NOTIFICATION_READ`, `REQUEST_TYPE_READ`, `SERVICE_READ`, `SLA_READ`, `TICKET_READ`, `WORKFLOW_READ`; excludes `AUDIT_EXPORT` | Visibility configurable; mutation deny invariant; no default export | Runtime denies mutations and rejects `AUDIT_EXPORT` at grant validation and authorization. Migration 031's all-read-only proposal includes export and conflicts with FRD §4. | Pending; export excluded from proposed default |
+
+The 031 catalogue has 36 proposed codes; this is not an approved seed matrix.
+Existing mutation call sites reuse `TICKET_UPDATE` for ticket response,
+lifecycle, assignment, approval-related and workflow operations; ticket
+creation has no direct `TICKET_UPDATE` check in `TicketLifecycleService`.
+Approval configuration uses `APPROVAL_READ`, `APPROVAL_ADMIN`, and
+`APPROVAL_PUBLISH`. The selected guidance requires FR-021 assignment authority
+and designated-approver/separation-of-duties checks in addition to
+`TICKET_UPDATE`; their complete role mapping is not approved here. USER
+requester/assignee scope is now source-enforced under S3-04. No chat permission
+code or permission check exists. `AUDITOR_VIEW` protects auditor reports;
+`AUDIT_EXPORT` has no source authorization call site. The precise
+role-to-code/action mapping, fixed-role core set, complete approved catalogue,
+and SUPER_ADMIN catalogue-retention semantics remain open. The formal D08
+`Decision` remains `PENDING` pending owner attribution and approval.
 
 ### D09 — Unknown migration history *(prerequisite)*
 
@@ -526,3 +610,71 @@ explicit decisions in the existing packet. Only then may a separately scoped
 schema-change request be drafted and reviewed. The API/Angular acceptance gate
 remains blocked by missing permission metadata and unresolved persisted RBAC
 facts.
+
+### S5-01 E2E operation authorization packet — owner completion required
+
+**Status:** `PREPARED / UNSIGNED`; this section is a request for bounded owner
+decisions, not authorization to connect, inspect, execute SQL, apply migrations,
+run provider tests, write data, or clean up data. D01 and S5-01 remain `PENDING`
+and `BLOCKED`, respectively. Migration history remains `UNKNOWN`.
+
+#### Target and identity
+
+| Field | Prepared value | Owner evidence still required |
+|---|---|---|
+| Host / port | `localhost:5432` (owner-identified target) | Resolve and approve the actual endpoint/peer identity, address family, and hostname/peer/TLS policy for this operation. A prior owner-supplied report states `::1` and SSL off; it is not independently verified here. |
+| Database / role | `pa_tickets_codex_e2e` / `pa_tickets_codex` | Fresh, independent target and role identity evidence; verify the dedicated role's current least-privilege grants and scope. The role name alone does not establish operator identity. |
+| Accountable operator | Not established | Named person, organizational role, independently verified identity, and evidence reference. |
+| Independent verifier / approvers | Not established | Named independent verifier; separate database owner, release authority, and security reviewer attestations for the scopes below. |
+
+#### Separated operation scopes
+
+No scope below is authorized by this packet until its own exact artifact,
+identity, privilege, time, recovery, and evidence fields are completed and
+signed. Approval of one scope does not authorize another.
+
+| Scope | Proposed boundary | Current exact-artifact / readiness evidence |
+|---|---|---|
+| **A — D01 baseline adoption** | Decide whether the immutable historical artifact or a separately reviewed replacement is the authoritative baseline. No database operation is included. | Historical `tests/scripts/postgresql-foundational-ddl.sql` at commit `1bcc493d267e23e3e126b9b698fa4344ebe8588a`, SHA-256 `4F4EC0066DC62AAA61C75DB67177A25D152FBF6484CCB4711A942FD1DC58EC19`, is the current proposal. The current expanded source file hashes to `21D7F96A02A079CB9870DAFA1F4FF24602CE6251F314F0E3C9D2E4B72B98CE64`; it is not byte-identical and has not been shown semantically equivalent. D01 remains `PENDING`; T62B.1 expected-versus-observed definitions, normalized differences, source dependencies, sequence/ownership and recovery evidence are prerequisites to adoption. |
+| **B — S5-03 read-only catalog fingerprint** | One explicitly named, read-only catalog operation against the approved target; no writes. | `tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_e2e_verify.sql` hashes to `CEE95FC8BC178D79DC6E1A36020CC42D9E5DA31E1FA5FF649EF7B1E744B7E3B9`, but its embedded assertions target `pa_tickets_e2e_verify` / `postgres`, not the owner-identified `pa_tickets_codex_e2e` / `pa_tickets_codex`. It is not approved or usable for the selected target. `Docs/PA_TICKETS_POSTGRESQL_READ_ONLY_VALIDATION_AUTHORIZATION.md` records `TARGET CONFLICT` and a baseline hash `5CAA69711E3804C301F04ADEF049CEE33830F937B7F5DAF8BD3BEF796D5537F7`, which is neither the historical D01 candidate (`4F4EC…`) nor the current source hash (`21D7F…`). A target-correct read-only query/script, its exact bytes/hash, expected comparison artifact, current baseline decision, and evidence custodian must be approved before S5-03. No fingerprint is authorized here. |
+| **C — S5-10 schema application** | Only the exact reviewed DDL/migration artifacts, in one owner-approved order, with pre/post checks. No seed or grant data unless separately approved. | `Docs/reconciliation/proposed/postgresql/S5-08_foundational_ddl_only_REVIEW.sql` hashes to `0807A915E7E501F64EBA7F689F533F67965EF586F651AC1AF4D4D2A687FCC313`; `Docs/reconciliation/proposed/postgresql/S5-08_foundational_data_only_REVIEW.sql` hashes to `121397D455CEBEBA124BCE8D9E15B1C1C0D85CD1276D9E751141FA662B7289DA`; `Docs/reconciliation/proposed/postgresql/S5-08_sequence_operations_DEFERRED_REVIEW.sql` hashes to `721CCB7546D028C223AE803489F271314B921EE1C761704B90676162C67BC9A3`. The baseline DDL and S5-09 migration 039 review draft are review-only and contain unconditional stop guards; they are not executable operations. Migration 039 `database/migrations/postgresql/039_ticket_type_foundations_REVIEW.sql` hashes to `0B6B82CA634A00997FA99B0D76C7FE805B9FBECEBED94243A95C08F77F7C4681`. The currently listed S5-10 order names baseline DDL → 028 → 029 → 033 → 034 → 035 → 036 → 037 “plus S5-09 drafts” but does not place 039 exactly. Release/security review must resolve the executable artifact set, exact order, and expected effect per artifact before any schema authorization. |
+| **D — provider-test writes and cleanup** | No provider tests, generated writes, or cleanup are included in A–C. | S5-05 requires a separate list of exact test names, unique generated identifiers, write scope, and cleanup procedure. None is authorized or named by this packet. |
+
+For traceability, current dependency hashes reproduced from repository bytes are:
+
+| Artifact | Current SHA-256 |
+|---|---|
+| `database/migrations/postgresql/028_local_password_authentication.sql` | `0D5291A9B5EC06F0146E947A7B988A87013EE68B69DE1983AB75761FAEE0B45B` |
+| `database/migrations/postgresql/029_user_profile_hierarchy.sql` | `9F40FB5326CB2F5FC48CD68D73636BC8B3EED5366D6EC58320207FF0F5C7FB3D` |
+| `database/migrations/postgresql/033_rbac_migration_ledger.sql` | `8ACA3EC0431A91DEE9276B7924C8F8D0FA1E4FF11647B807CE33BA41393C9ABC` |
+| `database/migrations/postgresql/034_rbac_permission_metadata.sql` | `3C428BB4FC11D1F38C1BB2400FE008360E06C8131504D0F730DC328D0DB9ECB2` |
+| `database/migrations/postgresql/035_rbac_scopes_and_delegation.sql` | `C0CCC9DA3C3A441CEA6928ADBB8E50030F0D0716A59B9EADAFE2AACA97E15D9D` |
+| `database/migrations/postgresql/036_rbac_proposals.sql` | `FC65DC8A3E7B86EBCDE3FF31BE89F9E51FEFA8971921490EC21353E33B356562` |
+| `database/migrations/postgresql/037_builtin_role_provisioning.sql` | `6853071A8DF0784E2046133B650A87BC84F47C3F5CEBA6276FE8051968A0FD71` |
+
+Hashes identify current bytes only. The review reports document artifact roles,
+source provenance, exclusions, and current differences; none establishes live
+catalog compatibility, applied migration history, or authorization to execute.
+
+#### Owner-completed authorization terms
+
+The following fields remain intentionally blank for the accountable owners; no
+identity, signature, time window, privilege grant, recovery evidence, or
+approval reference is inferred:
+
+- **Approved scope(s) and exact order:** ____________________
+- **Authorized operator identity / role and independent identity evidence:** ____________________
+- **Current least-privilege grants and target/schema boundary evidence:** ____________________
+- **Permitted test names, generated-write identifiers, and cleanup boundary (or “none”):** ____________________
+- **Validity start (UTC) / fixed expiry (UTC):** ____________________
+- **Revocation authority and method:** ____________________
+- **Backup or disposable-target recreation and recovery procedure:** ____________________
+- **Evidence artifacts, custody location, retention, and responsible custodian:** ____________________
+- **Uncertain outcome:** stop; do not retry; classify as `UNKNOWN`; identify the separately authorized read-only reconciliation action and evidence custodian: ____________________
+- **Database owner approval / identity / UTC date / reference:** ____________________
+- **Release authority approval / identity / UTC date / reference:** ____________________
+- **Security reviewer approval / identity / UTC date / reference:** ____________________
+
+Until these fields are completed against final immutable artifacts, D01 stays
+`PENDING`; S5-01 stays `BLOCKED`; S5-03 and S5-10 stay `BLOCKED`; no provider
+operation or migration-history claim is permitted.

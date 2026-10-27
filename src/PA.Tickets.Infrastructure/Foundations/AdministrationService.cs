@@ -444,6 +444,10 @@ public sealed class AdministrationService(
             EnsureRolePermissionCeiling(role, permission);
             EnsureDirectPermissionGrantAllowed(role, permission);
         }
+        else
+        {
+            RoleAuthorizationPolicy.EnsurePermissionRevocationAllowed(role.Code, permission.Code);
+        }
 
         var now = clock.GetUtcNow();
         var activeGrant = await db.AdministrationRolePermissions
@@ -530,6 +534,8 @@ public sealed class AdministrationService(
             EnsureRolePermissionCeiling(role, permission);
             EnsureDirectPermissionGrantAllowed(role, permission);
         }
+        foreach (var change in changes.Where(change => !change.Granted))
+            RoleAuthorizationPolicy.EnsurePermissionRevocationAllowed(role.Code, permissions[change.PermissionId].Code);
         reason = Required(reason, nameof(reason), 1000);
 
         foreach (var change in changes)
@@ -963,18 +969,18 @@ public sealed class AdministrationService(
             ResourceType: "USER", ResourceId: target.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)), ct);
         if (target.Id == actor)
             throw new UnauthorizedAccessException("Users cannot assign roles to themselves.");
-        if (role.Code.Equals("ADMINISTRATOR", StringComparison.OrdinalIgnoreCase))
+        if (role.Code == "ADMINISTRATOR")
             throw new UnauthorizedAccessException("The legacy administrator role can only be changed through an approved, audited transition.");
         if (await HasAdministratorRoleAsync(target.Id, ct))
             throw new UnauthorizedAccessException("Role memberships for administrator accounts cannot be changed through ordinary role administration.");
         var actorRoles = await ActiveRoleCodesAsync(actor, ct);
         if (role.Code == RoleAuthorizationPolicy.SuperAdmin)
             throw new UnauthorizedAccessException("Super Admin membership grants require the separately reviewed bootstrap or a two-person privileged-role workflow.");
-        if (role.Code == RoleAuthorizationPolicy.AdminHead && !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase))
+        if (role.Code == RoleAuthorizationPolicy.AdminHead && !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal))
             throw new UnauthorizedAccessException("Only a Super Admin may grant privileged administrative roles.");
         if (role.Code == RoleAuthorizationPolicy.Admin &&
-            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase) &&
-            !(actorRoles.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.OrdinalIgnoreCase) &&
+            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal) &&
+            !(actorRoles.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.Ordinal) &&
               await HasCurrentAdminDelegationAsync(actor, target.Id, ct)))
             throw new UnauthorizedAccessException("Only a Super Admin or the assigned Admin Head may assign Admin memberships.");
         if (role.Code is RoleAuthorizationPolicy.Admin or RoleAuthorizationPolicy.AdminHead)
@@ -986,7 +992,7 @@ public sealed class AdministrationService(
         if (!role.SystemRole)
         {
             EnsureValidCustomRoleCode(role.Code);
-            if (!actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase))
+            if (!actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal))
                 throw new UnauthorizedAccessException("Only a Super Admin may assign custom roles.");
         }
         else if (!isBuiltIn)
@@ -1001,9 +1007,9 @@ public sealed class AdministrationService(
                                             (!validTo.HasValue || membership.ValidFrom < validTo.Value)
                                       select existingRole.Code).ToListAsync(ct);
         if (role.Code == RoleAuthorizationPolicy.SuperAdmin && overlappingCodes.Count > 0 ||
-            overlappingCodes.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase) ||
-            (role.Code == RoleAuthorizationPolicy.Admin && overlappingCodes.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.OrdinalIgnoreCase)) ||
-            (role.Code == RoleAuthorizationPolicy.AdminHead && overlappingCodes.Contains(RoleAuthorizationPolicy.Admin, StringComparer.OrdinalIgnoreCase)))
+            overlappingCodes.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal) ||
+            (role.Code == RoleAuthorizationPolicy.Admin && overlappingCodes.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.Ordinal)) ||
+            (role.Code == RoleAuthorizationPolicy.AdminHead && overlappingCodes.Contains(RoleAuthorizationPolicy.Admin, StringComparer.Ordinal)))
             throw new InvalidOperationException("This role combination violates the protected role-combination policy.");
         var row = new AdministrationUserRoleRow { Id = await NextIdAsync("PA_TICKETS_USER_ROLE_SEQ", ct), UserId = userId, RoleId = roleId, ValidFrom = validFrom, ValidTo = validTo, Active = true, CreatedAt = clock.GetUtcNow(), CreatedBy = actor };
         db.AdministrationUserRoles.Add(row);
@@ -1125,14 +1131,14 @@ public sealed class AdministrationService(
         var targetRoleCode = targetRole.Code;
         var actorRoles = await ActiveRoleCodesAsync(actor, ct);
         if (!targetRole.SystemRole &&
-            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase))
+            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal))
             throw new UnauthorizedAccessException("Only a Super Admin may remove a custom-role membership.");
         if (targetRoleCode is "ADMIN_HEAD" or "SUPER_ADMIN" &&
-            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase))
+            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal))
             throw new UnauthorizedAccessException("Only a Super Admin may remove this privileged membership.");
         if (targetRoleCode == "ADMIN" &&
-            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.OrdinalIgnoreCase) &&
-            !(actorRoles.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.OrdinalIgnoreCase) &&
+            !actorRoles.Contains(RoleAuthorizationPolicy.SuperAdmin, StringComparer.Ordinal) &&
+            !(actorRoles.Contains(RoleAuthorizationPolicy.AdminHead, StringComparer.Ordinal) &&
               await HasCurrentAdminDelegationAsync(actor, target.Id, ct)))
             throw new UnauthorizedAccessException("Only a Super Admin or the assigned Admin Head may remove this Admin membership.");
         var now = clock.GetUtcNow();
@@ -1643,6 +1649,8 @@ public sealed class AdministrationService(
             string.IsNullOrWhiteSpace(permission.ScopeClass) ||
             string.IsNullOrWhiteSpace(permission.SecurityClass))
             throw new UnauthorizedAccessException("Permission metadata is incomplete; the permission cannot be granted.");
+        if (!RoleAuthorizationPolicy.AllowsPermissionCode(role.Code, permission.Code))
+            throw new UnauthorizedAccessException("This permission is outside the role's immutable permission-code ceiling.");
 
         var securityClass = permission.SecurityClass.ToUpperInvariant();
         if (securityClass is not ("READ_ONLY" or "BUSINESS" or "DEPARTMENT_ADMIN" or "ORGANIZATION_ADMIN" or "SECURITY_GOVERNANCE"))

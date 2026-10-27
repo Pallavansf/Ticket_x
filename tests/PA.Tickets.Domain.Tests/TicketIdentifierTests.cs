@@ -1,5 +1,9 @@
 using PA.Tickets.Application.Tickets;
 using PA.Tickets.Domain.Tickets;
+using Microsoft.EntityFrameworkCore;
+using PA.Tickets.Application.Foundations;
+using PA.Tickets.Infrastructure.Foundations;
+using PA.Tickets.Infrastructure.Persistence;
 
 namespace PA.Tickets.Domain.Tests;
 
@@ -67,6 +71,30 @@ public sealed class TicketIdentifierTests
     }
 
     [Fact]
+    public async Task Lookup_uses_user_own_or_assigned_authorization_for_the_loaded_ticket()
+    {
+        await using var db = new TicketsDbContext(new DbContextOptionsBuilder<TicketsDbContext>().Options);
+        var now = DateTimeOffset.UtcNow;
+        var facts = new AuthorizationFacts(
+            new AuthorizationActorFact(42, null, null, true),
+            new AuthorizationPermissionFact(3, "TICKET_READ", "TICKETS", "VIEW", "NONE", "READ_ONLY", true, true),
+            [new AuthorizationRoleFact(7, "USER", true, 70)],
+            [new AuthorizationGrantFact(7, "USER", true, true, PA.Tickets.Application.Foundations.EffectiveGrantAuthorization.Active,
+                now.AddMinutes(-1), null, "TICKET_READ", "READ_ONLY", "NONE", true)],
+            []);
+        var authorization = new DatabaseAuthorizationService(db, TimeProvider.System,
+            new LookupFactsReader(facts), new LookupDelegationFactsReader());
+        var access = new DatabaseTicketAccessAuthorizer(authorization, db, TimeProvider.System);
+        var own = Ticket.Create(42, "INC-1000000", TicketType.Incident, "Own", null, 42, 42, now);
+        var unrelated = Ticket.Create(43, "INC-1000001", TicketType.Incident, "Unrelated", null, 9, 9, now);
+        var ownService = new TicketLifecycleService(new LookupRepository(own), null!, access, null!, null!, null!, null!, null!, null!, null!, null!, null!, TimeProvider.System, null!, null!);
+        var unrelatedService = new TicketLifecycleService(new LookupRepository(unrelated), null!, access, null!, null!, null!, null!, null!, null!, null!, null!, null!, TimeProvider.System, null!, null!);
+
+        Assert.Equal(own.Id, (await ownService.LookupAsync(own.Number, 42, CancellationToken.None)).Id);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => unrelatedService.LookupAsync(unrelated.Number, 42, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Lookup_reports_unknown_identifiers_as_not_found()
     {
         var repository = new LookupRepository(null);
@@ -112,5 +140,16 @@ public sealed class TicketIdentifierTests
             return DenyAccess ? Task.FromException(new UnauthorizedAccessException()) : Task.CompletedTask;
         }
         public Task EnsureCanSearchAsync(long actorUserId, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class LookupFactsReader(AuthorizationFacts facts) : IAuthorizationFactsReader
+    {
+        public Task<AuthorizationFacts> ReadAsync(long actorUserId, string permission, DateTimeOffset at, CancellationToken cancellationToken) => Task.FromResult(facts);
+    }
+
+    private sealed class LookupDelegationFactsReader : IAdminHeadDelegationFactsReader
+    {
+        public Task<AdminHeadDelegationFacts> ReadAsync(long adminHeadUserId, long targetUserId, DateTimeOffset at, CancellationToken cancellationToken) =>
+            Task.FromResult(new AdminHeadDelegationFacts(false, false, false));
     }
 }

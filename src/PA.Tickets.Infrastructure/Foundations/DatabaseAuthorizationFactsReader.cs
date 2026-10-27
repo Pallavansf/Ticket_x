@@ -17,19 +17,21 @@ public sealed class DatabaseAuthorizationFactsReader(TicketsDbContext db) : IAut
             .Select(x => new AuthorizationActorFact(x.Id, x.DepartmentId, x.TeamId, x.Active))
             .SingleOrDefaultAsync(cancellationToken);
 
-        var permissionMetadata = await db.AdministrationPermissions.AsNoTracking()
+        var permissionMetadataRows = await db.AdministrationPermissions.AsNoTracking()
             .Where(x => x.Active && x.Code == permission)
             .Select(x => new AuthorizationPermissionFact(
                 x.Id, x.Code, x.ModuleCode, x.ActionCode, x.ScopeClass,
                 x.SecurityClass, x.ReadOnly, x.Active))
-            .SingleOrDefaultAsync(cancellationToken);
+            .Take(2)
+            .ToListAsync(cancellationToken);
+        var permissionMetadata = permissionMetadataRows.Count == 1 ? permissionMetadataRows[0] : null;
 
         var activeRoles = await (from membership in db.AdministrationUserRoles.AsNoTracking()
                                  join role in db.AdministrationRoles.AsNoTracking() on membership.RoleId equals role.Id
                                  where membership.UserId == actorUserId && membership.Active &&
                                        membership.ValidFrom <= at && (membership.ValidTo == null || membership.ValidTo > at) &&
                                        role.Active
-                                 select new AuthorizationRoleFact(membership.Id, role.Code, role.SystemRole))
+                                 select new AuthorizationRoleFact(membership.Id, role.Code, role.SystemRole, role.Id))
             .ToListAsync(cancellationToken);
 
         var grants = await (from membership in db.AdministrationUserRoles.AsNoTracking()

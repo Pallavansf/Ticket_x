@@ -20,14 +20,17 @@ public sealed class DatabaseAuthorizationService(
 
     public async Task<bool> HasPermissionAsync(long actorUserId, string permission, AuthorizationResource? resource, CancellationToken ct)
     {
-        if (actorUserId <= 0 || string.IsNullOrWhiteSpace(permission)) return false;
+        if (actorUserId <= 0 || !RoleAuthorizationPolicy.IsCanonicalPermissionCode(permission)) return false;
         var now = clock.GetUtcNow();
         var facts = await factsReader.ReadAsync(actorUserId, permission, now, ct);
         var user = facts.Actor;
         if (user is null) return false;
 
         var permissionMetadata = facts.Permission;
-        if (permissionMetadata is null ||
+        if (permissionMetadata is null) return false;
+        if (!permissionMetadata.Active ||
+            !RoleAuthorizationPolicy.IsCanonicalPermissionCode(permissionMetadata.Code) ||
+            !string.Equals(permissionMetadata.Code, permission, StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(permissionMetadata.ModuleCode) ||
             string.IsNullOrWhiteSpace(permissionMetadata.ActionCode) ||
             string.IsNullOrWhiteSpace(permissionMetadata.ScopeClass) ||
@@ -35,20 +38,48 @@ public sealed class DatabaseAuthorizationService(
             return false;
 
         var activeRoles = facts.ActiveRoles;
+        if (activeRoles.Any(role => !RoleAuthorizationPolicy.IsCanonicalRoleCode(role.Code)) ||
+            activeRoles.GroupBy(role => role.Code, StringComparer.Ordinal)
+                .Any(group => group.Select(role => role.RoleId).Distinct().Count() > 1))
+            return false;
+        if ((activeRoles.Any(role => role.Code == RoleAuthorizationPolicy.SuperAdmin) && activeRoles.Count != 1) ||
+            (activeRoles.Any(role => role.Code == RoleAuthorizationPolicy.Admin) &&
+             activeRoles.Any(role => role.Code == RoleAuthorizationPolicy.AdminHead)))
+            return false;
+        var hasUserRole = activeRoles.Any(role => role.Code == RoleAuthorizationPolicy.User);
         if (activeRoles.Any(x => x.Code == RoleAuthorizationPolicy.Spectator) &&
-            !RoleAuthorizationPolicy.AllowsPermission(RoleAuthorizationPolicy.Spectator, true,
+            (!RoleAuthorizationPolicy.AllowsPermissionCode(RoleAuthorizationPolicy.Spectator, permission) ||
+             !RoleAuthorizationPolicy.AllowsPermission(RoleAuthorizationPolicy.Spectator, true,
                 permissionMetadata.SecurityClass, permissionMetadata.ActionCode, permissionMetadata.ReadOnly))
+           )
             return false;
 
-        var grants = facts.Grants;
+        var grants = facts.Grants
+            .Where(grant => EffectiveGrantAuthorization.IsEffective(grant.Active, grant.EffectiveStatus,
+                grant.ValidFrom, grant.ValidTo, now))
+            .ToArray();
+        if (grants.GroupBy(grant => (grant.MembershipId, grant.RoleCode, grant.PermissionCode))
+            .Any(group => group.Count() > 1))
+            return false;
 
         foreach (var grant in grants)
         {
-            if (!EffectiveGrantAuthorization.IsEffective(grant.Active, grant.EffectiveStatus,
-                    grant.ValidFrom, grant.ValidTo, now))
+            if (!RoleAuthorizationPolicy.IsCanonicalRoleCode(grant.RoleCode) ||
+                !RoleAuthorizationPolicy.IsCanonicalPermissionCode(grant.PermissionCode) ||
+                !RoleAuthorizationPolicy.AllowsPermissionCode(grant.RoleCode, grant.PermissionCode) ||
+                !string.Equals(grant.PermissionCode, permission, StringComparison.Ordinal) ||
+                !activeRoles.Any(role => role.MembershipId == grant.MembershipId &&
+                    role.Code == grant.RoleCode && role.SystemRole == grant.SystemRole))
                 continue;
             if (!RoleAuthorizationPolicy.AllowsPermission(grant.RoleCode, grant.SystemRole, grant.SecurityClass,
                     permissionMetadata.ActionCode, grant.ReadOnly))
+                continue;
+            if (hasUserRole &&
+                permission is ("TICKET_READ" or "TICKET_UPDATE") &&
+                resource is not null &&
+                grant.RoleCode is not (RoleAuthorizationPolicy.Admin or RoleAuthorizationPolicy.AdminHead or RoleAuthorizationPolicy.SuperAdmin) &&
+                (resource.TicketId is null || resource.RequesterUserId is null ||
+                 (resource.RequesterUserId != actorUserId && resource.AssignedUserId != actorUserId)))
                 continue;
             if (grant.RoleCode == RoleAuthorizationPolicy.LegacyAdministrator &&
                 !RoleAuthorizationPolicy.IsLegacyAdministratorPermission(grant.PermissionCode))
@@ -254,7 +285,9 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
         await authorization.EnsurePermissionAsync(
             actorUserId,
             "TICKET_UPDATE",
-            new AuthorizationResource(ticketResource.TicketId, effectiveDepartmentId, effectiveTeamId, ticketResource.ClientId),
+            new AuthorizationResource(ticketResource.TicketId, effectiveDepartmentId, effectiveTeamId,
+                ticketResource.ClientId, ticketResource.AssignedUserId,
+                RequesterUserId: ticketResource.RequesterUserId),
             ct);
     }
 
@@ -269,12 +302,21 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
 
         if (await authorization.HasPermissionAsync(actorUserId, "TICKET_READ", new AuthorizationResource(OrganizationId: null), ct) && await OrganizationScopeAuthorization.HasEffectiveSuperAdminOrganizationScopeAsync(db, actorUserId, clock.GetUtcNow(), ct)) return criteria;
         var now = clock.GetUtcNow();
+        var hasUserRole = await (from membership in db.AdministrationUserRoles.AsNoTracking()
+                                 join role in db.AdministrationRoles.AsNoTracking() on membership.RoleId equals role.Id
+                                 where membership.UserId == actorUserId && membership.Active && role.Active &&
+                                       membership.ValidFrom <= now && (membership.ValidTo == null || membership.ValidTo > now) &&
+                                       role.Code == RoleAuthorizationPolicy.User
+                                 select membership.Id).AnyAsync(ct);
         var departmentAdmin = await (from membership in db.AdministrationUserRoles.AsNoTracking()
                                      join role in db.AdministrationRoles.AsNoTracking() on membership.RoleId equals role.Id
                                      where membership.UserId == actorUserId && membership.Active && role.Active &&
                                            membership.ValidFrom <= now && (membership.ValidTo == null || membership.ValidTo > now) &&
                                            (role.Code == RoleAuthorizationPolicy.Admin || role.Code == RoleAuthorizationPolicy.AdminHead)
                                      select membership.Id).AnyAsync(ct);
+        // A mixed USER/management membership is kept to the narrower USER query
+        // boundary until the query can combine role-specific scopes safely.
+        var ownOrAssignedOnly = hasUserRole;
 
         var hasExplicitScope =
             criteria.DepartmentId.HasValue ||
@@ -291,7 +333,7 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
             criteria.CreatedFrom is not null ||
             criteria.CreatedTo is not null;
 
-        if (!hasExplicitScope)
+        if (!hasExplicitScope && !ownOrAssignedOnly)
             throw new UnauthorizedAccessException("Ticket search requires a department, team, client, assignee, or other explicit scope filter.");
 
         if (criteria.DepartmentId.HasValue && criteria.DepartmentId != user.DepartmentId)
@@ -321,21 +363,23 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
 
         var hasOrganizationalScope = user.DepartmentId.HasValue || user.TeamId.HasValue;
         var hasClientScope = criteria.ClientId.HasValue;
-        var hasSelfAssignmentScope = criteria.AssigneeId == actorUserId;
+        var hasSelfAssignmentScope = ownOrAssignedOnly || criteria.AssigneeId == actorUserId;
         if (!hasOrganizationalScope && !hasClientScope && !hasSelfAssignmentScope)
             throw new UnauthorizedAccessException("Ticket search requires an active department, team, authorized client, or own-assignment scope.");
 
         return criteria with
         {
-            DepartmentId = criteria.DepartmentId ?? user.DepartmentId,
-            TeamId = criteria.TeamId ?? (departmentAdmin ? null : user.TeamId),
-            AssigneeId = hasOrganizationalScope || hasClientScope ? criteria.AssigneeId : actorUserId
+            DepartmentId = ownOrAssignedOnly ? criteria.DepartmentId : criteria.DepartmentId ?? user.DepartmentId,
+            TeamId = ownOrAssignedOnly ? criteria.TeamId : criteria.TeamId ?? (departmentAdmin ? null : user.TeamId),
+            AssigneeId = ownOrAssignedOnly || hasOrganizationalScope || hasClientScope ? criteria.AssigneeId : actorUserId,
+            OwnOrAssignedUserId = ownOrAssignedOnly ? actorUserId : criteria.OwnOrAssignedUserId
         };
     }
     private Task<bool> HasClientMembershipAsync(long userId, long clientId, DateTimeOffset now, CancellationToken ct) =>
         db.AdministrationUserClients.AsNoTracking().AnyAsync(x => x.UserId == userId && x.ClientId == clientId && x.Active && x.ValidFrom <= now && (x.ValidTo == null || x.ValidTo > now), ct);
 
     private static AuthorizationResource Resource(Ticket ticket) =>
-        new(ticket.Id, ticket.CurrentDepartmentId, ticket.CurrentTeamId, ticket.ClientId, ticket.CurrentAssignee);
+        new(ticket.Id, ticket.CurrentDepartmentId, ticket.CurrentTeamId, ticket.ClientId, ticket.CurrentAssignee,
+            RequesterUserId: ticket.RequestedBy);
 }
 

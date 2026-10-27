@@ -13,9 +13,32 @@ public static class RoleAuthorizationPolicy
     public const string Spectator = "SPECTATOR";
     public const string LegacyAdministrator = "ADMINISTRATOR";
 
+    public static bool IsCanonicalRoleCode(string? role) =>
+        IsCanonicalCode(role) && role is not ("SUPERADMIN" or "ADMINHEAD");
+
+    public static bool IsCanonicalPermissionCode(string? permission) => IsCanonicalCode(permission);
+
+    public static bool AllowsPermissionCode(string role, string permissionCode) =>
+        IsCanonicalPermissionCode(permissionCode) &&
+        !(role == Spectator && permissionCode == "AUDIT_EXPORT");
+
+    public static bool IsFixedCorePermission(string role, string permissionCode) =>
+        role == Admin && permissionCode is "TICKET_READ" or "TICKET_UPDATE" or "USER_ADMIN" or "ROLE_ADMIN";
+
+    public static void EnsurePermissionRevocationAllowed(string role, string permissionCode)
+    {
+        if (IsFixedCorePermission(role, permissionCode))
+            throw new UnauthorizedAccessException("This permission is part of the fixed role's core capabilities and cannot be revoked.");
+    }
+
+    private static bool IsCanonicalCode(string? code) =>
+        code is { Length: >= 2 and <= 64 } &&
+        char.IsAsciiLetterUpper(code[0]) &&
+        code.All(character => char.IsAsciiLetterUpper(character) || char.IsAsciiDigit(character) || character == '_');
+
     public static bool AllowsPermission(string role, bool systemRole, string securityClass, string actionCode, bool readOnly)
     {
-        if (string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(securityClass) ||
+        if (!IsCanonicalRoleCode(role) || string.IsNullOrWhiteSpace(securityClass) ||
             string.IsNullOrWhiteSpace(actionCode))
             return false;
 
@@ -44,8 +67,7 @@ public static class RoleAuthorizationPolicy
     }
 
     public static bool IsLegacyAdministratorPermission(string permission) =>
-        permission.Equals("TICKET_READ", StringComparison.OrdinalIgnoreCase) ||
-        permission.Equals("TICKET_UPDATE", StringComparison.OrdinalIgnoreCase);
+        permission is "TICKET_READ" or "TICKET_UPDATE";
 
     public static bool RequiresIndependentApproval(string securityClass) =>
         securityClass.ToUpperInvariant() is "DEPARTMENT_ADMIN" or "ORGANIZATION_ADMIN" or "SECURITY_GOVERNANCE";

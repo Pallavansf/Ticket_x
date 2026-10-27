@@ -12,7 +12,7 @@ public sealed record AuthorizationPermissionFact(
     bool ReadOnly,
     bool Active);
 
-public sealed record AuthorizationRoleFact(long MembershipId, string Code, bool SystemRole);
+public sealed record AuthorizationRoleFact(long MembershipId, string Code, bool SystemRole, long RoleId = 0);
 
 public sealed record AuthorizationGrantFact(
     long MembershipId,

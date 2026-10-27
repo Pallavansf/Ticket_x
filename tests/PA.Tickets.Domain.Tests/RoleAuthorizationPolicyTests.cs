@@ -75,6 +75,38 @@ public sealed class RoleAuthorizationPolicyTests
     }
 
     [Fact]
+    public void Spectator_cannot_receive_or_use_audit_export_permission()
+    {
+        Assert.False(RoleAuthorizationPolicy.AllowsPermissionCode("SPECTATOR", "AUDIT_EXPORT"));
+        Assert.True(RoleAuthorizationPolicy.AllowsPermissionCode("SPECTATOR", "AUDITOR_VIEW"));
+        Assert.True(RoleAuthorizationPolicy.AllowsPermissionCode("ADMIN", "AUDIT_EXPORT"));
+    }
+
+    [Theory]
+    [InlineData("TICKET_READ")]
+    [InlineData("TICKET_UPDATE")]
+    [InlineData("USER_ADMIN")]
+    [InlineData("ROLE_ADMIN")]
+    public void Admin_fixed_core_permissions_cannot_be_revoked(string permissionCode)
+    {
+        Assert.True(RoleAuthorizationPolicy.IsFixedCorePermission("ADMIN", permissionCode));
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            RoleAuthorizationPolicy.EnsurePermissionRevocationAllowed("ADMIN", permissionCode));
+    }
+
+    [Theory]
+    [InlineData("ADMIN_HEAD", "TICKET_READ")]
+    [InlineData("ADMIN", "SERVICE_READ")]
+    [InlineData("USER", "TICKET_READ")]
+    [InlineData("SUPER_ADMIN", "TICKET_READ")]
+    public void Unresolved_or_configurable_role_permissions_are_not_encoded_as_fixed_core(
+        string roleCode, string permissionCode)
+    {
+        Assert.False(RoleAuthorizationPolicy.IsFixedCorePermission(roleCode, permissionCode));
+        RoleAuthorizationPolicy.EnsurePermissionRevocationAllowed(roleCode, permissionCode);
+    }
+
+    [Fact]
     public void Legacy_administrator_grants_are_narrowly_limited_to_ticket_operations()
     {
         Assert.True(RoleAuthorizationPolicy.AllowsPermission("ADMINISTRATOR", true, "BUSINESS", "EDIT", false));
@@ -103,6 +135,36 @@ public sealed class RoleAuthorizationPolicyTests
         Assert.False(RoleAuthorizationPolicy.AllowsPermission("bad-code", false, "BUSINESS", "EDIT", false));
         Assert.False(RoleAuthorizationPolicy.AllowsPermission("UNKNOWN_ROLE", true, "BUSINESS", "EDIT", false));
     }
+
+    [Theory]
+    [InlineData("USER", true)]
+    [InlineData("ADMIN_HEAD", true)]
+    [InlineData("SLA_MANAGER", true)]
+    [InlineData("user", false)]
+    [InlineData("Admin", false)]
+    [InlineData("SUPERADMIN", false)]
+    [InlineData("ADMINHEAD", false)]
+    [InlineData("SUPER-ADMIN", false)]
+    public void Role_codes_must_be_canonical_and_must_not_be_known_aliases(string role, bool expected) =>
+        Assert.Equal(expected, RoleAuthorizationPolicy.IsCanonicalRoleCode(role));
+
+    [Theory]
+    [InlineData("TICKET_READ", true)]
+    [InlineData("ROLE_PERMISSION_ADMIN", true)]
+    [InlineData("ticket_read", false)]
+    [InlineData("TICKET-READ", false)]
+    [InlineData(" TICKET_READ", false)]
+    [InlineData("", false)]
+    public void Permission_codes_are_validated_without_normalizing_aliases(string permission, bool expected) =>
+        Assert.Equal(expected, RoleAuthorizationPolicy.IsCanonicalPermissionCode(permission));
+
+    [Theory]
+    [InlineData("admin")]
+    [InlineData("spectator")]
+    [InlineData("SUPERADMIN")]
+    [InlineData("ADMINHEAD")]
+    public void Noncanonical_or_aliased_role_codes_never_receive_normalized_permissions(string role) =>
+        Assert.False(RoleAuthorizationPolicy.AllowsPermission(role, true, "READ_ONLY", "VIEW", true));
 
     [Theory]
     [InlineData("DEPARTMENT_ADMIN", true)]

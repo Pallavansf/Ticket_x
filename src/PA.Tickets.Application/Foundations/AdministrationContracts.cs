@@ -81,7 +81,8 @@ public sealed record AuthorizationResource(
     long? AssignedUserId = null,
     long? OrganizationId = null,
     string? ResourceType = null,
-    string? ResourceId = null);
+    string? ResourceId = null,
+    long? RequesterUserId = null);
 
 public interface IAuthorizationService
 {

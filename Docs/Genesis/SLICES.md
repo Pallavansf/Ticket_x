@@ -243,13 +243,13 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 - **Reuse first:** `RoleAuthorizationPolicy.cs`, `SpectatorMutationPolicy.cs`, migrations 031–037, `CONFIGURABLE_RBAC_DESIGN.md`, the role-administration page.
 - **Objective:** (1) configurable display labels for `ADMIN` and `ADMIN_HEAD` (reuse an existing name column or add a nullable one in a draft migration); (2) the new permission codes in §3 added to the allowlist and the reviewed seed draft; (3) role classes: fixed roles keep identity and core capabilities, configurable roles are editable inside ceilings; (4) default grants per FRD §4.4; (5) no code rename and no behavior change to existing authorization.
 - **Acceptance:** unknown permission codes fail closed; fixed-role core grants cannot be removed; configurable roles can be edited inside ceilings; Spectator deny precedence still holds; role changes are audited; existing authorization tests still pass.
-- **Status:** `PARTIAL` — the existing `S_ROLE_NAME` value now supports audited label updates for `ADMIN` and `ADMIN_HEAD` only; authorization remains permission-based and the codes are unchanged. The service policy, Angular editor, 32 focused role-policy tests, 19 role-editor specs and API/client builds provide source/unit evidence. Permission additions and the exact default grant matrix remain subject to D04/D08; provider persistence/audit evidence and fixed-role core-grant retention under provider-backed administration remain unverified.
+- **Status:** `PARTIAL` — audited labels remain limited to `ADMIN` and `ADMIN_HEAD`; role codes are unchanged. Authorization rejects noncanonical aliases, duplicate active identities/grants, and ambiguous permission metadata. The reconciled intended mapping now has fixed-core revocation protection for ADMIN's `TICKET_READ`, `TICKET_UPDATE`, `USER_ADMIN`, and `ROLE_ADMIN`; SPECTATOR `AUDIT_EXPORT` is denied. USER's FRD own/assigned boundary is broader in current RECORD/search scope paths, and `TICKET_UPDATE` combines creation, lifecycle, assignment and approval use; those mappings are not locked as core. SUPER_ADMIN catalogue membership is not approved. D04/D08 formal attribution and provider persistence/audit evidence remain outstanding.
 
 #### S3-03 — Effective grants, dates and revocation
 - **FRs:** FR-008, FR-009 · `SRC` · **Status:** `PARTIAL`; provider race tests `BLOCKED`.
 
 #### S3-04 — Scope and delegation
-- **FRs:** FR-009 · `SRC` · **Status:** `PARTIAL` (`HostedDelegationAuthorizationTests`, `AdminHeadDelegationPolicyTests`); provider lineage `BLOCKED`.
+- **FRs:** FR-009 · `SRC` · **Status:** `PARTIAL`. Source now limits USER ticket reads/updates and search results to requester-or-current-assignee; the existing realtime scope reader passes its server-loaded requester fact into the same authorization check. Providerless authorization/search/realtime, lookup and scoped ADMIN/ADMIN_HEAD regressions plus existing cross-scope/delegation tests pass. PostgreSQL scope lineage, SQL translation and expiry/revocation race evidence remain `BLOCKED`.
 
 #### S3-05 — Persisted authorization provider acceptance
 - **FRs:** FR-007–FR-009 · `PRV` · **Dependencies:** S5-10 · **Status:** `BLOCKED`.
@@ -560,9 +560,9 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S2-07 | FR-035 | PARTIAL | Exact lookup, FR-035 alphabet validation, 19 focused tests including hosted auth/error contract | PostgreSQL/deployed uniqueness and generation evidence | Verify under authorized provider acceptance | |
 | S2-08 | FR-039 | PARTIAL | Root 014–016 sources | S5-09 for provider | Gap list | |
 | S3-01 | FR-007, 015 | PARTIAL | Hosted auth tests | Provider | — | |
-| S3-02 | FR-008, FR-020 | PARTIAL | Restricted audited ADMIN/ADMIN_HEAD label update on existing role-name column; fail-closed label policy; 32 role-policy tests, 19 editor specs, API/client builds | Provider persistence/audit; permission catalogue and grant matrix under pending D04/D08; provider-backed core-grant protections | Resolve owner decisions before permission seed/grant changes; retain `PARTIAL` | |
+| S3-02 | FR-008, FR-020 | PARTIAL | Restricted audited ADMIN/ADMIN_HEAD label update; canonical/ambiguity checks; ADMIN four-code fixed-core revocation policy; SPECTATOR AUDIT_EXPORT denial; focused RBAC/scope/delegation tests and API build | Formal D04/D08 attribution; TICKET_UPDATE action mapping; approved SUPER_ADMIN catalogue/core semantics; provider persistence/audit | Resolve action mapping; retain `PARTIAL` | |
 | S3-03 | FR-008, 009 | PARTIAL | Grant tests | Provider races | — | |
-| S3-04 | FR-009 | PARTIAL | Delegation tests | Provider | — | |
+| S3-04 | FR-009 | PARTIAL | USER own/assigned resource and pre-pagination search boundaries; fail-closed incomplete resources; scoped ADMIN/ADMIN_HEAD tests; lookup authorization; realtime preserves server-loaded requester facts; 54 focused authorization/search/cross-scope/delegation/realtime tests pass | Provider scope lineage, SQL translation, expiry/revocation races | Verify only under separately authorized provider acceptance | |
 | S3-05 | FR-007–009 | BLOCKED | — | S5-10 | — | |
 | S3-06 | FR-020, 008 | PARTIAL | Role admin UI | S3-02 | After S3-02 | |
 | S3-07 | FR-021, 009 | PARTIAL | Assign endpoint, scopes, delegation | S3-02 | Rule model and tests | |

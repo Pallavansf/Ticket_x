@@ -87,8 +87,8 @@ public sealed class DurableApprovalConfigurationRepository(
     public async Task<IReadOnlyCollection<ApprovalInstanceHistoryView>> GetTicketRuntimeHistoryAsync(long actor,long ticketId,CancellationToken ct)
     {
         await authorization.EnsurePermissionAsync(actor,"APPROVAL_READ",null,ct);
-        var ticket=await db.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==ticketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-        await authorization.EnsurePermissionAsync(actor,"TICKET_READ",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee),ct);
+        var ticket=await tickets.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==ticketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
+        await authorization.EnsurePermissionAsync(actor,"TICKET_READ",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee,RequesterUserId:ticket.RequestedBy),ct);
         var instances=await db.ApprovalInstances.AsNoTracking().Where(x=>x.TicketId==ticketId).OrderBy(x=>x.Id).ToListAsync(ct);
         if(instances.Count==0)return Array.Empty<ApprovalInstanceHistoryView>();
         var ids=instances.Select(x=>x.Id).ToHashSet();

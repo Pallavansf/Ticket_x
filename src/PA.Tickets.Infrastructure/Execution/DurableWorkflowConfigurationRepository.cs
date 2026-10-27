@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -70,8 +70,8 @@ public sealed class DurableWorkflowConfigurationRepository(ExecutionDbContext db
     public async Task<IReadOnlyCollection<WorkflowInstanceHistoryView>> GetTicketRuntimeHistoryAsync(long actor,long ticketId,CancellationToken ct)
     {
         await authorization.EnsurePermissionAsync(actor,"WORKFLOW_READ",null,ct);
-        var ticket=await db.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==ticketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-        await authorization.EnsurePermissionAsync(actor,"TICKET_READ",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee),ct);
+        var ticket=await tickets.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==ticketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
+        await authorization.EnsurePermissionAsync(actor,"TICKET_READ",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee,RequesterUserId:ticket.RequestedBy),ct);
         var instances=await db.WorkflowInstances.AsNoTracking().Where(x=>x.TicketId==ticketId).OrderBy(x=>x.Id).ToListAsync(ct);
         if(instances.Count==0)return Array.Empty<WorkflowInstanceHistoryView>();
         var versionIds=instances.Select(x=>x.VersionId).ToHashSet();

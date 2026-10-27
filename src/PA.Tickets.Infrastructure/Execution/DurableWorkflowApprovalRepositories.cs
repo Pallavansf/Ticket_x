@@ -1,4 +1,4 @@
-﻿using System.Data;using System.Security.Cryptography;using Microsoft.Extensions.Configuration;using System.Text;using System.Text.Json;using Microsoft.EntityFrameworkCore;using PA.Tickets.Application.Execution;using PA.Tickets.Application.Foundations;using PA.Tickets.Application.Tickets;using PA.Tickets.Domain.Tickets;using PA.Tickets.Infrastructure.Persistence;
+using System.Data;using System.Security.Cryptography;using Microsoft.Extensions.Configuration;using System.Text;using System.Text.Json;using Microsoft.EntityFrameworkCore;using PA.Tickets.Application.Execution;using PA.Tickets.Application.Foundations;using PA.Tickets.Application.Tickets;using PA.Tickets.Domain.Tickets;using PA.Tickets.Infrastructure.Persistence;
 using PA.Tickets.Application.Approvals;
 namespace PA.Tickets.Infrastructure.Execution;
 public sealed class DurableWorkflowExecutionRepository(ExecutionDbContext db,TicketsDbContext ticketDb,IWorkflowRouter router,Microsoft.Extensions.Configuration.IConfiguration configuration,AuditChainCoordinator auditLocks,ProviderTransactionRetry retry,ITicketStatusConfigurationRepository statusConfiguration,IAuthorizationService authorization):IWorkflowExecutionRepository
@@ -9,7 +9,7 @@ public sealed class DurableWorkflowExecutionRepository(ExecutionDbContext db,Tic
   if(string.IsNullOrWhiteSpace(publicWorkItemId)||publicWorkItemId.Length!=16||publicWorkItemId.Any(ch=>!"ABCDEFGHJKLMNPQRSTUVWXYZ23456789".Contains(ch)))throw new KeyNotFoundException("Work item was not found.");
   var work=await db.WorkItems.SingleOrDefaultAsync(x=>x.PublicId==publicWorkItemId,ct)??throw new KeyNotFoundException("Work item was not found.");
   var ticket=await ticketDb.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==work.TicketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,work.ToDepartmentId,work.ToTeamId,ticket.ClientId,work.AssignedToUserId),ct);
+  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,work.ToDepartmentId,work.ToTeamId,ticket.ClientId,work.AssignedToUserId,RequesterUserId:ticket.RequestedBy),ct);
   return await CompleteWorkItemInternalAsync(work.Id,actor,key,correlationId,ct);
  }
  private async Task<DurableMutationResult> CompleteWorkItemInternalAsync(long workItemId,long actor,string key,string? correlationId,CancellationToken ct){var work=await db.WorkItems.SingleOrDefaultAsync(x=>x.Id==workItemId,ct)??throw new KeyNotFoundException("Work item was not found.");if(work.WorkflowStepInstanceId is null)throw new InvalidOperationException("Work item is not linked to a workflow step.");EnsureAssignedActor(work.AssignedToUserId,actor);var fingerprint=$"WORK_ITEM:{workItemId}";var prior=await db.Idempotency.SingleOrDefaultAsync(x=>x.Scope=="WORKFLOW_STEP_COMPLETE"&&x.Key==key,ct);if(prior is not null){if(prior.Fingerprint!=fingerprint)throw new InvalidOperationException("Idempotency key was reused for a different request.");return new(false,true,"Already processed.");}if(work.Status is not ("PENDING" or "IN_PROGRESS"))throw new InvalidOperationException("Work item is not executable.");var step=await db.WorkflowSteps.SingleOrDefaultAsync(x=>x.Id==work.WorkflowStepInstanceId.Value,ct)??throw new KeyNotFoundException("Workflow step instance was not found.");var result=await CompleteStepInternalAsync(step.WorkflowInstanceId,step.Id,workItemId,actor,key,correlationId,ct);return result;}
@@ -24,7 +24,7 @@ public sealed class DurableWorkflowExecutionRepository(ExecutionDbContext db,Tic
  if(string.IsNullOrWhiteSpace(key))throw new ArgumentException("Idempotency key is required.");
  var instance=await db.WorkflowInstances.SingleOrDefaultAsync(x=>x.Id==instanceId,ct)??throw new KeyNotFoundException("Workflow instance was not found.");
  var authorizationTicket=await ticketDb.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==instance.TicketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
- await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(authorizationTicket.Id,authorizationTicket.CurrentDepartmentId,authorizationTicket.CurrentTeamId,authorizationTicket.ClientId,authorizationTicket.CurrentAssignee),ct);
+ await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(authorizationTicket.Id,authorizationTicket.CurrentDepartmentId,authorizationTicket.CurrentTeamId,authorizationTicket.ClientId,authorizationTicket.CurrentAssignee,RequesterUserId:authorizationTicket.RequestedBy),ct);
  var initialFingerprint=$"INSTANCE:{instanceId}";var priorInitial=await db.Idempotency.SingleOrDefaultAsync(x=>x.Scope=="WORKFLOW_INITIAL_ACTIVATE"&&x.Key==key,ct);if(priorInitial is not null){if(priorInitial.Fingerprint!=initialFingerprint)throw new InvalidOperationException("Idempotency key was reused for a different request.");return new(false,true,"Already processed.");}
  if(instance.Status!="RUNNING")throw new InvalidOperationException("Workflow instance is not active.");
  if(await db.WorkflowSteps.AnyAsync(x=>x.WorkflowInstanceId==instanceId,ct))throw new InvalidOperationException("Workflow instance is already activated.");
@@ -53,7 +53,7 @@ private Task<DurableMutationResult> CompleteStepInternalAsync(long instanceId,lo
   var assignmentFingerprint=$"{publicWorkItemId}:{departmentId}:{teamId}:{userId}:{reason}";
   var work=await db.WorkItems.SingleOrDefaultAsync(x=>x.PublicId==publicWorkItemId,ct)??throw new KeyNotFoundException("Work item was not found.");
   var ticket=await ticketDb.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==work.TicketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,work.ToDepartmentId,work.ToTeamId,ticket.ClientId,work.AssignedToUserId),ct);
+  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,work.ToDepartmentId,work.ToTeamId,ticket.ClientId,work.AssignedToUserId,RequesterUserId:ticket.RequestedBy),ct);
   EnsureAssignmentAuthorized(actor,departmentId,teamId,userId);
   var targetTeam=teamId.HasValue?await ticketDb.AdministrationTeams.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==teamId&&x.Active,ct)??throw new ArgumentException("The assignment team is not active."):null;
   var targetUser=userId.HasValue?await ticketDb.AdministrationUsers.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==userId&&x.Active,ct)??throw new ArgumentException("The assignment user is not active."):null;
@@ -61,7 +61,7 @@ private Task<DurableMutationResult> CompleteStepInternalAsync(long instanceId,lo
   var effectiveTeamId=teamId??targetUser?.TeamId;
   if(targetTeam is not null&&targetTeam.DepartmentId!=effectiveDepartmentId)throw new ArgumentException("The assignment team does not belong to the selected department.");
   if(targetUser is not null&&(targetUser.DepartmentId!=effectiveDepartmentId||targetUser.TeamId!=effectiveTeamId))throw new ArgumentException("The assignment user does not belong to the selected department and team.");
-  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,effectiveDepartmentId,effectiveTeamId,ticket.ClientId),ct);
+  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,effectiveDepartmentId,effectiveTeamId,ticket.ClientId,ticket.CurrentAssignee,RequesterUserId:ticket.RequestedBy),ct);
   var priorAssignment=await db.Idempotency.SingleOrDefaultAsync(x=>x.Scope=="WORK_ITEM_ASSIGN"&&x.Key==key,ct);
   if(priorAssignment is not null){if(priorAssignment.Fingerprint!=assignmentFingerprint)throw new InvalidOperationException("Idempotency key was reused for a different request.");return new(false,true,"Already processed.");}
   if(work.Status is "COMPLETED" or "CANCELLED")throw new InvalidOperationException("Completed or cancelled work items cannot be reassigned.");
@@ -91,7 +91,7 @@ public sealed class DurableApprovalExecutionRepository(ExecutionDbContext db,Tic
  {
   if(request.CreatorUserId!=actor)throw new UnauthorizedAccessException("The approval creator must be the authenticated actor.");
   var ticket=await ticketDb.Tickets.AsNoTracking().SingleOrDefaultAsync(x=>x.Id==request.TicketId,ct)??throw new KeyNotFoundException("Ticket was not found.");
-  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee),ct);
+  await authorization.EnsurePermissionAsync(actor,"TICKET_UPDATE",new AuthorizationResource(ticket.Id,ticket.CurrentDepartmentId,ticket.CurrentTeamId,ticket.ClientId,ticket.CurrentAssignee,RequesterUserId:ticket.RequestedBy),ct);
   if(request.RequesterUserId!=ticket.RequestedBy)throw new UnauthorizedAccessException("The approval requester must match the ticket requester.");
   if(request.ExecutorUserId.HasValue&&request.ExecutorUserId!=ticket.CurrentAssignee)throw new UnauthorizedAccessException("The approval executor must match the ticket's current assignee.");
 
