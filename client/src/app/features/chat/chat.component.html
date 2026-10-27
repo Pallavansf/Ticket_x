@@ -1,0 +1,36 @@
+@if (available()) {
+<section class="chat" [class.chat--drawer]="!isWorkItemChat" [attr.aria-label]="isWorkItemChat ? 'Work-item chat' : 'Direct messages'" (keydown.escape)="closeFromKeyboard()">
+  <header class="chat__header">
+    <div>
+      <p class="eyebrow">{{ isWorkItemChat ? 'WORK-ITEM CONVERSATION' : 'DIRECT MESSAGES' }}</p>
+      <h2>{{ isWorkItemChat ? 'Chat' : 'Direct messages' }}</h2>
+      @if (isWorkItemChat) { <p class="chat__context">Work item {{ workItemId }}</p> }
+    </div>
+    <div class="chat__header-actions">
+      <span class="chat__availability" role="status">Unavailable</span>
+      @if (!isWorkItemChat) { <button #closeButton class="chat__close" type="button" aria-label="Close direct messages" (click)="closed.emit()">Close</button> }
+    </div>
+  </header>
+
+  <div class="chat__notice" role="status">
+    <strong>Chat is not connected yet.</strong>
+    <p>The Chat API contract is not available. No messages are loaded or sent from this screen.</p>
+  </div>
+
+  <div class="chat__empty" aria-live="polite">
+    <span class="chat__icon" aria-hidden="true">✉</span>
+    <h3>No conversation loaded</h3>
+    <p>Conversation history will appear when a supported Chat service is connected.</p>
+  </div>
+
+  <form class="chat__composer" aria-label="Message composer" (submit)="$event.preventDefault()">
+    <label class="visually-hidden" for="chat-message">Write a message</label>
+    <textarea id="chat-message" rows="2" placeholder="Chat is unavailable" disabled></textarea>
+    <div class="chat__actions">
+      <button type="button" disabled aria-label="Attach a file">Attach file</button>
+      <button type="button" disabled aria-label="Mention someone">Mention</button>
+      <button type="submit" disabled>Send</button>
+    </div>
+  </form>
+</section>
+}

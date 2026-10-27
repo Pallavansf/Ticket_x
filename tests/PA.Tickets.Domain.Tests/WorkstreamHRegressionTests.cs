@@ -131,7 +131,7 @@ public sealed class WorkstreamHRegressionTests
             AddProviderConfig(db, testCase.ProviderEnabled, testCase.ProviderEffectiveFrom, testCase.ProviderEffectiveTo);
             var store = new StubCommunicationStore(new CommunicationMessage(42, 7, null, CommunicationChannel.Email, "deterministic", null, "person@example.com", "Subject", "Body", null, CommunicationStatus.Queued, 0, "corr", now.AddMinutes(-1), null, "PRVT-9F2C1AB8D3E4"));
             var provider = new TrackingCommunicationProvider();
-            var processor = new CommunicationDeliveryProcessor(store, new CommunicationProviderResolver([provider]), new ConfigurationBuilder().Build(), db);
+            var processor = new CommunicationDeliveryProcessor(store, new CommunicationProviderResolver([provider]), new ConfigurationBuilder().Build(), db, new TestFeatureSwitchService(true));
 
             var count = await processor.ProcessOnceAsync("worker-1", CancellationToken.None);
 
@@ -151,7 +151,7 @@ public sealed class WorkstreamHRegressionTests
         AddProviderConfig(db, true, now.AddMinutes(-5), now.AddMinutes(30));
         var store = new StubCommunicationStore(new CommunicationMessage(42, 7, null, CommunicationChannel.Email, "deterministic", null, "person@example.com", "Subject", "Body", null, CommunicationStatus.Queued, 0, "corr", now.AddMinutes(-1), null, "PRVT-9F2C1AB8D3E4"));
         var provider = new TrackingCommunicationProvider();
-        var processor = new CommunicationDeliveryProcessor(store, new CommunicationProviderResolver([provider]), new ConfigurationBuilder().Build(), db);
+        var processor = new CommunicationDeliveryProcessor(store, new CommunicationProviderResolver([provider]), new ConfigurationBuilder().Build(), db, new TestFeatureSwitchService(true));
 
         var count = await processor.ProcessOnceAsync("worker-2", CancellationToken.None);
 
@@ -159,6 +159,25 @@ public sealed class WorkstreamHRegressionTests
         Assert.Equal(1, provider.Invocations);
         Assert.Equal(0, store.ReleaseCalls);
         Assert.Equal(1, store.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task CommunicationDeliveryProcessor_releases_message_when_channel_feature_switch_is_disabled()
+    {
+        await using var db = CreateDbContext();
+        var store = new StubCommunicationStore(new CommunicationMessage(42, 7, null, CommunicationChannel.Email,
+            "deterministic", null, "person@example.com", "Subject", "Body", null, CommunicationStatus.Queued,
+            0, "corr", DateTimeOffset.UtcNow, null, "PRVT-9F2C1AB8D3E4"));
+        var provider = new TrackingCommunicationProvider();
+        var processor = new CommunicationDeliveryProcessor(store, new CommunicationProviderResolver([provider]),
+            new ConfigurationBuilder().Build(), db, new TestFeatureSwitchService(false));
+
+        var count = await processor.ProcessOnceAsync("worker-disabled", CancellationToken.None);
+
+        Assert.Equal(1, count);
+        Assert.Equal(0, provider.Invocations);
+        Assert.Equal(1, store.ReleaseCalls);
+        Assert.Equal(0, store.CompleteCalls);
     }
 
     private static TicketsDbContext CreateDbContext()
@@ -194,7 +213,9 @@ public sealed class WorkstreamHRegressionTests
                 ""D_UPDATED_AT"" TEXT NOT NULL,
                 ""N_UPDATED_BY"" INTEGER NOT NULL,
                 ""N_ROW_VERSION"" INTEGER NOT NULL
-            );");
+            );
+            CREATE TABLE ""PA_TICKETS"" (""N_TICKET_ID"" INTEGER PRIMARY KEY, ""N_CURRENT_DEPARTMENT_ID"" INTEGER NULL);
+            INSERT INTO ""PA_TICKETS"" (""N_TICKET_ID"", ""N_CURRENT_DEPARTMENT_ID"") VALUES (7, NULL);");
         return db;
     }
 
@@ -235,6 +256,14 @@ public sealed class WorkstreamHRegressionTests
             RowVersion = 1
         });
         db.SaveChanges();
+    }
+
+    private sealed class TestFeatureSwitchService(bool enabled) : IFeatureSwitchService
+    {
+        public Task<IReadOnlyCollection<FeatureSwitchView>> ListAsync(long actor, long? departmentId, CancellationToken ct) => Task.FromResult<IReadOnlyCollection<FeatureSwitchView>>([]);
+        public Task<FeatureSwitchView> SetAsync(long actor, string code, long? departmentId, bool enabled, int? expectedRowVersion, string? reason, CancellationToken ct) => throw new NotSupportedException();
+        public Task<bool> IsEnabledAsync(string code, long? departmentId, CancellationToken ct) => Task.FromResult(enabled);
+        public Task<IReadOnlyCollection<FeatureAvailabilityView>> ForActorAsync(long actor, CancellationToken ct) => Task.FromResult<IReadOnlyCollection<FeatureAvailabilityView>>([]);
     }
 
     private sealed class TrackingCommunicationProvider : ICommunicationProvider
@@ -284,6 +313,7 @@ public sealed class WorkstreamHRegressionTests
         }
 
         public Task<TicketView> GetAsync(long id, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
+        public Task<TicketView> LookupAsync(string identifier, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
         public Task<TicketSearchPage> SearchAsync(TicketSearchCriteria criteria, long actor, CancellationToken ct) => Task.FromResult(new TicketSearchPage(Array.Empty<TicketView>(), 1, 25, 0));
         public Task<TicketView> ClassifyAsync(long id, long serviceId, long categoryId, long requestTypeId, long priorityId, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));
         public Task<TicketView> RouteAsync(long id, long? departmentId, long? teamId, long actor, CancellationToken ct) => Task.FromResult(new TicketView(0, "", TicketType.Request, TicketStatus.New, "", null, null, null, null, Array.Empty<WorkItemView>(), null, null, null, null, null));

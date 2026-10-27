@@ -11,6 +11,11 @@ using PA.Tickets.Infrastructure;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 51L * 1024 * 1024);
 builder.Services.AddControllers(options => options.Filters.Add<SpectatorMutationAuthorizationFilter>());
+builder.Services.AddSignalR(options =>
+{
+    options.MaximumReceiveMessageSize = 16 * 1024;
+    options.MaximumParallelInvocationsPerClient = 4;
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks()
@@ -25,6 +30,11 @@ if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Te
         PA.Tickets.Infrastructure.Foundations.DeterministicContentScanner>();
 }
 ApiSecurityConfiguration.AddAuthenticationAndCors(builder.Services, builder.Configuration, builder.Environment);
+builder.Services.AddSingleton<PA.Tickets.Application.Foundations.IRealtimePublisher,
+    PA.Tickets.Api.Realtime.SignalRRealtimePublisher>();
+builder.Services.AddScoped<PA.Tickets.Api.Realtime.IRealtimeTicketScopeReader,
+    PA.Tickets.Api.Realtime.RealtimeTicketScopeReader>();
+builder.Services.AddScoped<PA.Tickets.Api.Realtime.RealtimeTicketSubscriptionAuthorizer>();
 
 var app = builder.Build();
 app.Use(async (context, next) =>
@@ -56,6 +66,8 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         PA.Tickets.Application.Foundations.AttachmentTooLargeException => StatusCodes.Status413PayloadTooLarge,
         PA.Tickets.Application.Foundations.ContentScannerUnavailableException => StatusCodes.Status503ServiceUnavailable,
         PA.Tickets.Application.Foundations.ContentRejectedException => StatusCodes.Status422UnprocessableEntity,
+        PA.Tickets.Application.Foundations.FeatureDisabledException => StatusCodes.Status503ServiceUnavailable,
+        PA.Tickets.Application.Foundations.FeatureSwitchUnavailableException => StatusCodes.Status503ServiceUnavailable,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
         KeyNotFoundException => StatusCodes.Status404NotFound,
         Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException => StatusCodes.Status409Conflict,
@@ -71,11 +83,21 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
         StatusCodes.Status400BadRequest => "Invalid request",
         StatusCodes.Status413PayloadTooLarge => "File too large",
         StatusCodes.Status422UnprocessableEntity => "File content rejected",
-        StatusCodes.Status503ServiceUnavailable => "File security scanning unavailable",
+        StatusCodes.Status503ServiceUnavailable => error switch
+        {
+            PA.Tickets.Application.Foundations.FeatureDisabledException => "Feature unavailable",
+            PA.Tickets.Application.Foundations.FeatureSwitchUnavailableException => "Feature configuration unavailable",
+            _ => "File security scanning unavailable"
+        },
         _ => "An unexpected error occurred."
     };
     context.Response.StatusCode = status;
-    await context.Response.WriteAsJsonAsync(new { title, status, traceId = context.TraceIdentifier });
+    var code = error is PA.Tickets.Application.Foundations.FeatureDisabledException
+        ? PA.Tickets.Application.Foundations.FeatureDisabledException.ErrorCode
+        : error is PA.Tickets.Application.Foundations.FeatureSwitchUnavailableException
+            ? PA.Tickets.Application.Foundations.FeatureSwitchUnavailableException.ErrorCode
+            : null;
+    await context.Response.WriteAsJsonAsync(new { title, status, code, traceId = context.TraceIdentifier });
 }));
 if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Testing"))
 {
@@ -96,6 +118,7 @@ app.UseAuthentication();
 app.UseMiddleware<PasswordRotationRequiredMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<PA.Tickets.Api.Realtime.RealtimeHub>("/hubs/updates").RequireAuthorization();
 app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("live") });
 app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
 app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });

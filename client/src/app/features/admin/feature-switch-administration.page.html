@@ -1,0 +1,35 @@
+<main class="feature-admin">
+  <header class="heading">
+    <div><p class="eyebrow">Configuration</p><h1>Feature switches</h1>
+      <p>Control availability by organization or department. Missing settings remain disabled until configured.</p></div>
+  </header>
+
+  @if (error()) { <p class="message error" role="alert">{{ error() }}</p> }
+  @if (notice()) { <p class="message success" role="status">{{ notice() }}</p> }
+
+  <section class="panel" aria-labelledby="scope-title">
+    <h2 id="scope-title">Settings scope</h2>
+    <div class="scope-controls">
+      <label>Scope<select name="scope" [(ngModel)]="scope" (ngModelChange)="scopeChanged()"><option value="GLOBAL">Global</option><option value="DEPARTMENT">Department</option></select></label>
+      @if (scope === 'DEPARTMENT') { <label>Department ID<input name="departmentId" type="number" min="1" step="1" [(ngModel)]="departmentId" (change)="load()"></label> }
+      <button type="button" (click)="load()" [disabled]="loading()">{{ loading() ? 'Loading…' : 'Refresh' }}</button>
+    </div>
+    <label class="reason">Change reason (optional)<input name="reason" maxlength="1000" [(ngModel)]="reason" autocomplete="off"></label>
+  </section>
+
+  <section class="panel" aria-labelledby="switches-title">
+    <h2 id="switches-title">Available switches</h2>
+    @if (loading()) { <p role="status">Loading persisted feature settings…</p> }
+    @else if (rows().length === 0 && !error()) { <p>No feature switches were returned.</p> }
+    @else if (rows().length > 0) {
+      <div class="switch-list">
+        @for (row of rows(); track row.code) {
+          <article class="switch-row">
+            <div><h3>{{ row.name }}</h3><p>{{ row.code }} · {{ row.inherited ? 'Inherited from global' : row.configured ? 'Configured at this scope' : 'Missing; fails closed' }} · Version {{ row.rowVersion }}</p></div>
+            <label class="switch"><input type="checkbox" [checked]="row.enabled" [disabled]="saving() !== null" (change)="setEnabled(row, $any($event.target).checked)"><span>{{ row.enabled ? 'Enabled' : 'Disabled' }}</span></label>
+          </article>
+        }
+      </div>
+    }
+  </section>
+</main>

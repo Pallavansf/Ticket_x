@@ -7,8 +7,9 @@ import { DatePipe } from '@angular/common';
 import { StatusPanelComponent } from '../../shared/status-panel.component';
 import { TicketView, TicketsApiService } from '../../core/tickets-api.service';
 import { AuthService } from '../../core/auth/auth.service';
+import { ChatComponent } from '../chat/chat.component';
 
-@Component({ selector: 'app-ticket-detail', standalone: true, imports: [RouterLink, StatusPanelComponent, DatePipe], templateUrl: './ticket-detail.html', styleUrl: './ticket-detail.scss' })
+@Component({ selector: 'app-ticket-detail', standalone: true, imports: [RouterLink, StatusPanelComponent, DatePipe, ChatComponent], templateUrl: './ticket-detail.html', styleUrl: './ticket-detail.scss' })
 export class TicketDetailPage implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly api = inject(TicketsApiService);

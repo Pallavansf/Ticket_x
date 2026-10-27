@@ -57,6 +57,7 @@ public static class DependencyInjection
         services.AddScoped<ProviderTransactionRetry>();
         services.AddScoped<AuditChainCoordinator>();
         services.AddScoped<OperationalMetadataAuditWriter>();
+        services.AddScoped<IFeatureSwitchService, FeatureSwitchRepository>();
         services.AddScoped<IAuthorizationService, DatabaseAuthorizationService>();
         services.AddScoped<IAuthorizationFactsReader, DatabaseAuthorizationFactsReader>();
         services.AddScoped<IAdminHeadDelegationFactsReader, DatabaseDelegationFactsReader>();

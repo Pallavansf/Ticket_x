@@ -1,0 +1,49 @@
+-- PA_TICKETS feature switch persistence (REVIEW DRAFT; do not execute).
+-- S4-06 / FR-019 / FR-028. This draft has not been authorized or applied.
+-- No settings, permission grants, or migration-ledger rows are seeded here.
+-- Prerequisites: PA_TICKETS_DEPARTMENT, PA_TICKETS_USER, and migration 031's CONFIG_ADMIN permission.
+
+BEGIN;
+
+DO $$
+BEGIN
+    IF to_regclass('"PA_TICKETS_DEPARTMENT"') IS NULL
+       OR to_regclass('"PA_TICKETS_USER"') IS NULL
+       OR to_regclass('"PA_TICKETS_PERMISSION"') IS NULL THEN
+        RAISE EXCEPTION 'Feature switch migration 040 blocked: required RBAC relations are absent';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM "PA_TICKETS_PERMISSION" WHERE "S_PERMISSION_CODE" = 'CONFIG_ADMIN'
+    ) IS FALSE THEN
+        RAISE EXCEPTION 'Feature switch migration 040 blocked: CONFIG_ADMIN permission is absent';
+    END IF;
+    IF to_regclass('"PA_TICKETS_FEATURE_SWITCH"') IS NOT NULL THEN
+        RAISE EXCEPTION 'Feature switch migration 040 blocked: target relation already exists; reconcile before applying';
+    END IF;
+END $$;
+
+CREATE TABLE "PA_TICKETS_FEATURE_SWITCH" (
+    "S_SWITCH_CODE" varchar(50) NOT NULL,
+    "S_SCOPE_KEY" varchar(64) NOT NULL,
+    "N_DEPARTMENT_ID" bigint NULL,
+    "N_ENABLED" boolean NOT NULL,
+    "N_ROW_VERSION" integer NOT NULL DEFAULT 1,
+    "D_UPDATED_AT" timestamptz NOT NULL,
+    "N_UPDATED_BY" bigint NOT NULL,
+    CONSTRAINT "PK_PA_TICKETS_FEATURE_SWITCH" PRIMARY KEY ("S_SWITCH_CODE", "S_SCOPE_KEY"),
+    CONSTRAINT "CK_PA_TICKETS_FEATURE_SWITCH_CODE" CHECK ("S_SWITCH_CODE" IN (
+        'MESSAGE_CENTER', 'CHAT', 'CHAT_ATTACHMENTS', 'ANNOUNCEMENTS',
+        'CHANNEL_INAPP', 'CHANNEL_EMAIL', 'CHANNEL_WHATSAPP', 'CHANNEL_PUSH'
+    )),
+    CONSTRAINT "CK_PA_TICKETS_FEATURE_SWITCH_SCOPE" CHECK (
+        ("N_DEPARTMENT_ID" IS NULL AND "S_SCOPE_KEY" = 'GLOBAL') OR
+        ("N_DEPARTMENT_ID" > 0 AND "S_SCOPE_KEY" = 'DEPARTMENT/' || "N_DEPARTMENT_ID"::text)
+    ),
+    CONSTRAINT "CK_PA_TICKETS_FEATURE_SWITCH_VERSION" CHECK ("N_ROW_VERSION" > 0),
+    CONSTRAINT "FK_PA_TICKETS_FEATURE_SWITCH_DEPARTMENT" FOREIGN KEY ("N_DEPARTMENT_ID")
+        REFERENCES "PA_TICKETS_DEPARTMENT" ("N_DEPARTMENT_ID") ON DELETE RESTRICT,
+    CONSTRAINT "FK_PA_TICKETS_FEATURE_SWITCH_ACTOR" FOREIGN KEY ("N_UPDATED_BY")
+        REFERENCES "PA_TICKETS_USER" ("N_USER_ID") ON DELETE RESTRICT
+);
+
+COMMIT;

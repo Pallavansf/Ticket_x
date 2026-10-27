@@ -13,7 +13,8 @@ public sealed class CommunicationDeliveryProcessor(
     ICommunicationStore store,
     ICommunicationProviderResolver providers,
     IConfiguration configuration,
-    TicketsDbContext db, ILogger<CommunicationDeliveryProcessor>? logger = null) : ICommunicationDeliveryProcessor
+    TicketsDbContext db, IFeatureSwitchService featureSwitches,
+    ILogger<CommunicationDeliveryProcessor>? logger = null) : ICommunicationDeliveryProcessor
 {
     public async Task<int> ProcessOnceAsync(string workerId,CancellationToken ct)
     {
@@ -25,6 +26,19 @@ public sealed class CommunicationDeliveryProcessor(
         {
             var now = DateTimeOffset.UtcNow;
             var channel = message.Channel.ToString().ToUpperInvariant();
+            var ticket = await db.Tickets.AsNoTracking().Where(x => x.Id == message.TicketId)
+                .Select(x => new { x.CurrentDepartmentId }).SingleOrDefaultAsync(ct);
+            if (ticket is null)
+            {
+                await store.ReleaseLeaseAsync(message.Id, workerId, ct);
+                continue;
+            }
+            var departmentId = ticket.CurrentDepartmentId;
+            if (!await featureSwitches.IsEnabledAsync("CHANNEL_" + channel, departmentId, ct))
+            {
+                await store.ReleaseLeaseAsync(message.Id, workerId, ct);
+                continue;
+            }
             var providerCode = ResolveConfiguredProviderCode(message.ProviderCode);
             var channelConfig = await db.CommunicationChannelConfigurations.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.Channel == channel, ct);

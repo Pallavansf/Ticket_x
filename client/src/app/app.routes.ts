@@ -11,7 +11,8 @@ export const routes: Routes = [
     { path: 'tickets/create', canActivate: [permissionGuard], data: { permission: 'TICKET_UPDATE' }, loadComponent: () => import('./features/tickets/create/ticket-create.page').then(m => m.TicketCreatePage) },
     { path: 'tickets/:id', canActivate: [permissionGuard], data: { permission: 'TICKET_READ' }, loadComponent: () => import('./features/tickets/ticket-detail.page').then(m => m.TicketDetailPage) },
     { path: 'admin/users', canActivate: [permissionGuard], data: { permission: 'USER_ADMIN' }, loadComponent: () => import('./features/admin/user-administration.page').then(m => m.UserAdministrationPage) },
-    { path: 'admin/roles', canActivate: [permissionGuard], data: { permission: 'ROLE_PERMISSION_ADMIN' }, loadComponent: () => import('./features/admin/role-administration.page').then(m => m.RoleAdministrationPage) }
+    { path: 'admin/roles', canActivate: [permissionGuard], data: { permission: 'ROLE_PERMISSION_ADMIN' }, loadComponent: () => import('./features/admin/role-administration.page').then(m => m.RoleAdministrationPage) },
+    { path: 'admin/feature-switches', canActivate: [permissionGuard], data: { permission: 'CONFIG_ADMIN' }, loadComponent: () => import('./features/admin/feature-switch-administration.page').then(m => m.FeatureSwitchAdministrationPage) }
   ] },
   { path: '**', redirectTo: 'app' }
 ];

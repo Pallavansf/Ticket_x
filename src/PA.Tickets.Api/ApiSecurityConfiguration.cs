@@ -265,6 +265,13 @@ public static class ApiSecurityConfiguration
     {
         options.Events = new JwtBearerEvents
         {
+            OnMessageReceived = context =>
+            {
+                if (context.HttpContext.Request.Path.Equals("/hubs/updates", StringComparison.OrdinalIgnoreCase) &&
+                    context.Request.Query.TryGetValue("access_token", out var accessToken))
+                    context.Token = accessToken.ToString();
+                return Task.CompletedTask;
+            },
             OnTokenValidated = context =>
             {
                 var subject = context.Principal?.FindFirst("sub")?.Value

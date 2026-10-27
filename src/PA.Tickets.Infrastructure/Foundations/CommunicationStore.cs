@@ -18,13 +18,17 @@ public class CommunicationStore(
     IRecipientResolver recipients,
     CommunicationTemplateRenderer renderer,
     AuditChainCoordinator auditLocks,
-    ITicketAccessAuthorizer authorizer, IConfiguration configuration) : ICommunicationStore
+    ITicketAccessAuthorizer authorizer, IConfiguration configuration,
+    IFeatureSwitchService? featureSwitches = null) : ICommunicationStore
 {
     public async Task<CommunicationMessage> QueueAsync(QueueCommunicationCommand command,long actor,CancellationToken ct)
     {
         if (actor <= 0 || string.IsNullOrWhiteSpace(command.IdempotencyKey)) throw new ArgumentException("Actor and communication idempotency key are required.");
         var ticket = await db.Tickets.SingleOrDefaultAsync(x => x.Id == command.TicketId, ct) ?? throw new KeyNotFoundException("Ticket was not found.");
         await authorizer.EnsureCanMutateAsync(actor, ToTicket(ticket), ct);
+        var switchCode = "CHANNEL_" + command.Channel.ToString().ToUpperInvariant();
+        if (featureSwitches is null || !await featureSwitches.IsEnabledAsync(switchCode, ticket.CurrentDepartmentId, ct))
+            throw new FeatureDisabledException();
         var recipient = await recipients.ResolveAsync(command, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         if (await db.Communications.AnyAsync(x => x.IdempotencyKey == command.IdempotencyKey, ct)) throw new InvalidOperationException("Communication request was already queued.");
@@ -88,6 +92,10 @@ public class CommunicationStore(
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var row = await db.Communications.SingleOrDefaultAsync(x => x.PublicId == publicId, ct) ?? throw new KeyNotFoundException("Communication was not found.");
         await EnsureCanMutateAsync(actor, row.TicketId, ct);
+        var departmentId = await db.Tickets.AsNoTracking().Where(x => x.Id == row.TicketId)
+            .Select(x => x.CurrentDepartmentId).SingleOrDefaultAsync(ct);
+        if (featureSwitches is null || !await featureSwitches.IsEnabledAsync("CHANNEL_" + row.Channel, departmentId, ct))
+            throw new FeatureDisabledException();
         var maxAttempts = Math.Clamp(configuration.GetValue("Communication:Retry:MaxAttempts", 3), 1, 20);
         if (row.Status != "FAILED_TRANSIENT" || row.RetryCount >= maxAttempts) throw new InvalidOperationException("Only retryable communication below its maximum attempt count can be retried.");
         row.Status = "QUEUED"; row.NextRetryAt = DateTimeOffset.UtcNow; row.LeaseOwner = null; row.LeaseUntil = null;

@@ -1,0 +1,35 @@
+<div class="message-center">
+  <button class="bell" type="button" aria-label="Message Center" [attr.aria-expanded]="open" (click)="toggle()">
+    <span aria-hidden="true">♢</span><span class="bell__label">Messages</span>
+    @if (unreadCount > 0) { <span class="badge" aria-label="Unread messages">{{ unreadCount }}</span> }
+  </button>
+  @if (open) {
+    <section class="panel" aria-label="Message Center">
+      <header class="panel__header"><div><p class="eyebrow">YOUR UPDATES</p><h2>Message Center</h2></div><span class="connection" aria-live="polite">{{ liveAvailable ? 'Live updates on' : 'Live updates off' }}</span></header>
+      <div class="toolbar">
+        <label class="visually-hidden" for="message-search">Search notifications</label><input id="message-search" type="search" [(ngModel)]="search" (ngModelChange)="searchChanged()" placeholder="Search notifications" />
+        <label class="visually-hidden" for="message-state">Filter notifications</label><select id="message-state" [ngModel]="state" (ngModelChange)="setState($event)"><option value="all">All</option><option value="unread">Unread</option><option value="read">Read</option></select>
+      </div>
+      @if (loading) { <p class="state" role="status">Loading messages…</p> }
+      @else if (error) { <div class="state state--error" role="alert">Message Center is unavailable. The inbox service is not connected or could not be reached.<button type="button" (click)="load()">Try again</button></div> }
+      @else if (items.length === 0) { <p class="state">No messages match this view.</p> }
+      @else {
+        <ul class="items">@for (item of items; track item.id) {
+          <li [class.item--unread]="!item.read"><div class="item__copy"><p class="item__meta">{{ item.category }} · {{ item.createdAt | date:'medium' }}</p><h3>{{ item.title }}</h3><p>{{ item.summary }}</p></div><div class="item__actions">
+            @if (item.deepLink) { <a [routerLink]="item.deepLink" (click)="markRead(item)">Open</a> }
+            @if (!item.read) { <button type="button" (click)="markRead(item)">Mark read</button> }
+            <button type="button" (click)="archive(item)">Archive</button>
+          </div></li>
+        }</ul>
+      }
+      <footer class="panel__footer"><button type="button" (click)="showPreferences()">Notification preferences</button></footer>
+      @if (preferencesOpen) {
+        <section class="preferences" aria-label="Notification preferences"><h3>Preferences</h3>
+          @if (preferencesError) { <p role="alert">Preferences are unavailable while the inbox service is disconnected.</p> }
+          @else if (!preferences) { <p role="status">Loading preferences…</p> }
+          @else { @for (category of preferences.categories; track category.code; let i = $index) { <label><input type="checkbox" [checked]="category.enabled" [disabled]="category.mandatory" (change)="setPreference(i, $any($event.target).checked)" />{{ category.label }} @if (category.mandatory) { <span>(required)</span> }</label> }<button type="button" [disabled]="saving" (click)="savePreferences()">{{ saving ? 'Saving…' : 'Save preferences' }}</button> }
+        </section>
+      }
+    </section>
+  }
+</div>

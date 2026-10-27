@@ -4,6 +4,7 @@ import { ActivatedRoute, convertToParamMap } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { AuthService } from '../../core/auth/auth.service';
 import { TicketsApiService } from '../../core/tickets-api.service';
+import { FeatureSwitchesService } from '../../core/feature-switches.service';
 import { TicketDetailPage } from './ticket-detail.page';
 
 describe('TicketDetailPage', () => {
@@ -46,6 +47,7 @@ describe('TicketDetailPage', () => {
       providers: [
         { provide: AuthService, useValue: auth },
         { provide: TicketsApiService, useValue: api },
+        { provide: FeatureSwitchesService, useValue: { availability: () => of([]) } },
         {
           provide: ActivatedRoute,
           useValue: {
