@@ -35,6 +35,8 @@
     <None Update="xunit.runner.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\..\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql" Link="PinnedS503Artifact\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\scripts\postgresql-s5-03-privilege-preflight-pa_tickets_codex_e2e.sql" Link="PinnedPrivilegePreflight\tests\scripts\postgresql-s5-03-privilege-preflight-pa_tickets_codex_e2e.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>

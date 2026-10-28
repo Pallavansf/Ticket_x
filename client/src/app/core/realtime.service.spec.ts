@@ -33,11 +33,15 @@ vi.mock('@microsoft/signalr', () => ({
 }));
 
 describe('RealtimeService', () => {
-  const auth = { session: signal<{ accessToken: string } | null>({ accessToken: 'token-value' }) };
+  const createAuth = () => ({ session: signal<{ accessToken: string } | null>({ accessToken: 'token-value' }) });
+  let auth: ReturnType<typeof createAuth>;
   let service: RealtimeService;
+
+  beforeAll(() => TestBed.resetTestingModule());
 
   beforeEach(() => {
     vi.clearAllMocks();
+    auth = createAuth();
     mocks.connection.state = 'Disconnected';
     mocks.connection.start.mockImplementation(async () => { mocks.connection.state = 'Connected'; });
     mocks.connection.stop.mockResolvedValue(undefined);

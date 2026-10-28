@@ -402,10 +402,10 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 
 #### S5-01 — E2E target authorization packet
 - **FRs:** FR-016, NFR-002, NFR-010 · `DOC` · **Dependencies:** S5-08, S5-09
-- **Objective:** the owner created the E2E credential and it produced partial results (DD-07). Slices 63/70 recorded NO-GO because the formal approval fields were never supplied. Codex prepares **one** authorization packet from the exact operations produced by S5-08 and S5-09. The **owner** fills and signs it. Codex never fills it in.
-- **Packet fields (all required):** target host/port/database/role; operator and independent identity evidence; exact SQL files in order with SHA-256 of the exact bytes; expected effects per file; permitted test names; generated-write and cleanup boundary; validity window and expiry; revocation; backup or recreate-from-scratch recovery procedure for the disposable E2E database; evidence custody; uncertain-outcome handling.
-- **Acceptance:** the owner-signed packet exists and names the exact scope. Without it the slice stays `BLOCKED`.
-- **Status:** `BLOCKED` (waiting for the packet to be signed). **Do not repeat a report without new approval or evidence.**
+- **Objective:** prepare an operation-scoped authorization packet for the exact requested PostgreSQL operation. The adopted simplified local exception covers one S5-03 read-only fingerprint only; it does not authorize later schema, provider-write, seed, or cleanup scopes.
+- **Packet fields:** For the adopted one-operation exception, name host ::1, port 5432, database pa_tickets_codex_e2e, role pa_tickets_codex, the sole S5-03 read-only fingerprint operation, and SQL artifact tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql with SHA-256 2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8. Cite the adopted exception text SHA-256 17DCC7EBF56F696E11A4C86298B0A431BB46AB1D577A7ED4A35CFC5030448866. Require named owner/operator, start and fixed expiry no more than 30 minutes, current revocation check, actual least-privilege evidence, same-connection confirmation of database, role, server address ::1, port, and transaction_read_only=on, sanitized attempt/result evidence and custody, and stop/no-retry recovery handling. This one operation may omit custom Windows executable/process attestation only as expressly accepted by the adopted exception; it does not prove Windows process or executable identity. Other environments retain independent identity verification. All schema, migration, seed, provider-write, and cleanup permissions require separate authorization.
+- **Acceptance:** the adopted policy exception is recorded; a separate owner-attributable, time-limited operation authorization names the exact target and artifact; actual least-privilege evidence and a reviewed execution path satisfy the checks above; sanitized evidence is retained. The policy exception alone authorizes no operation. Until all operation-specific evidence is complete, S5-01 stays BLOCKED. Independent-verification requirements for every other environment remain unchanged.
+- **Status:** BLOCKED (policy exception adopted; waiting for separate operation authorization, privilege evidence, and reviewed execution-path verification). Do not treat policy adoption as S5-01 PASS or S5-03 authorization.
 
 #### S5-02 — Immutable migration artifact verification
 - **FRs:** FR-016, NFR-007, NFR-010 · `DOC`
@@ -414,7 +414,7 @@ Each slice lists **FRs · Type · Dependencies**, then objective, **reuse first*
 
 #### S5-03 — Fresh read-only catalog fingerprint
 - **FRs:** FR-016, NFR-001, NFR-007, NFR-010 · `PRV` · **Dependencies:** S5-01
-- **Objective:** with the signed packet, run the guarded read-only fingerprint of the E2E target and compare it with the expected baseline.
+- **Objective:** after S5-01 acceptance, use the separately authorized, reviewed read-only path to run the single pinned fingerprint against ::1:5432 / pa_tickets_codex_e2e / pa_tickets_codex; confirm the target and read-only transaction on the same connection before catalog queries, then compare with the expected baseline.
 - **Status:** `BLOCKED`.
 
 #### S5-04 — Historical root migration 014 execution
@@ -589,7 +589,7 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S4-18 | FR-036 | PARTIAL | SLA admin, calendars | S2-06 | — | |
 | S4-19 | FR-033, 034 | PARTIAL | Migrations 017–019 | — | Gap analysis | |
 | S4-20 | FR-040 | PARTIAL | Audit chain | S4-08, S4-10 | — | |
-| S5-01 | FR-016 | BLOCKED | Slices 63/70; bring-up | Owner-signed packet | Prepare packet | |
+| S5-01 | FR-016 | BLOCKED | Owner-adopted SOP v3.1 simplified exception (policy SHA-256 `17DCC7EBF56F696E11A4C86298B0A431BB46AB1D577A7ED4A35CFC5030448866`) for the exact local target and one S5-03 fingerprint. Offline tests confirm caller-created authorization/privilege objects cannot enable execution; the guard fails closed before configuration or connection because no canonical owner-evidence/custody loader exists. No database connection occurred. | Separate owner-approved operation record, separately authorized privilege-only bootstrap report, verified ACL custody and reviewed evidence loader are absent. Preserve independent identity verification elsewhere. | Complete privilege bootstrap under its own authorization, record exact evidence hashes and owner decision, then review loader before considering execution | |
 | S5-02 | FR-016 | PASS (hash only) | Slice evidence | — | — | |
 | S5-03 | FR-016 | BLOCKED | — | S5-01 | — | |
 | S5-04 | — | RETIRED | DD-06 | — | Do not work | |
@@ -597,7 +597,7 @@ Codex maintains this table. Do not invent dates; fill `Updated UTC` only when ev
 | S5-06 | — | RETIRED | DD-06 | — | Do not work | |
 | S5-07 | FR-016, 019–032 | NOT STARTED | — | `SCH` drafts | After drafts exist | |
 | S5-08 | FR-016 | PARTIAL | DDL/data review drafts, ownership matrix, output hashes rechecked; 40/40 CREATE TABLE names match source; data draft has no object-creation statements | D01 baseline adoption is PENDING; no SQL execution/parser; syntax/provider validation absent; migration history UNKNOWN | Review S5-08_BASELINE_SPLIT_REVIEW.md | |
-| S5-09 | FR-002, 016, 039 | PARTIAL | Five mapped ticket-type gaps, guarded 039 draft, source-level raw SQL call-site/object inventory rechecked | Communication schema ordering/compatibility, dynamic sequence resolution, generated/provider SQL and provider review remain | Review S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md | |
+| S5-09 | FR-002, 016, 039 | PARTIAL | Five mapped ticket-type gaps and guarded 039 draft; source-level raw SQL inventory; five communication EF mappings reconciled to a guarded candidate; review-only dependency order records Option A overlaps, root 013 and post-013 notification FKs | Provider/catalog compatibility, sequence ownership/current state, generated/provider SQL, baseline and migration-history verification remain | Review S5-09_MAPPED_SCHEMA_GAPS_REVIEW.md and canonical owner decision pack S5-10 dependency reconciliation | |
 | S5-10 | FR-016 | BLOCKED | — | S5-01, 03, 08, 09 | — | |
 | S6-01…S6-06 | various | BLOCKED | — | S5-10 | — | |
 | S7-01, 02, 04 | FR-018, NFR | NOT VERIFIED | — | — | — | |
