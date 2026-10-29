@@ -262,6 +262,12 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
 
     public async Task EnsureCanAssignAsync(long actorUserId, AuthorizationResource ticketResource, long? departmentId, long? teamId, long? assigneeUserId, CancellationToken ct)
     {
+        if (actorUserId <= 0) throw new UnauthorizedAccessException("A server-authenticated actor is required for assignment.");
+        if (ticketResource.TicketId is not > 0) throw new ArgumentException("A persisted source ticket is required for assignment.", nameof(ticketResource));
+        // Reject actors lacking the dedicated capability before resolving any
+        // destination facts. This also makes ordinary USER denial independent
+        // of caller-supplied destination data.
+        await authorization.EnsurePermissionAsync(actorUserId, "TICKET_ASSIGN_TEAM", ticketResource, ct);
         await authorization.EnsurePermissionAsync(actorUserId, "TICKET_UPDATE", ticketResource, ct);
 
         var targetTeam = teamId.HasValue
@@ -275,6 +281,8 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
 
         var effectiveDepartmentId = departmentId ?? targetTeam?.DepartmentId ?? targetUser?.DepartmentId;
         var effectiveTeamId = teamId ?? targetUser?.TeamId;
+        if (!effectiveDepartmentId.HasValue || !effectiveTeamId.HasValue)
+            throw new ArgumentException("An active destination department and team are required for assignment.");
 
         if (targetTeam is not null && effectiveDepartmentId != targetTeam.DepartmentId)
             throw new ArgumentException("The assignment team does not belong to the selected department.");
@@ -282,13 +290,51 @@ public sealed class DatabaseTicketAccessAuthorizer(IAuthorizationService authori
             (targetUser.DepartmentId != effectiveDepartmentId || targetUser.TeamId != effectiveTeamId))
             throw new ArgumentException("The assignment user does not belong to the selected department and team.");
 
-        await authorization.EnsurePermissionAsync(
-            actorUserId,
-            "TICKET_UPDATE",
-            new AuthorizationResource(ticketResource.TicketId, effectiveDepartmentId, effectiveTeamId,
-                ticketResource.ClientId, ticketResource.AssignedUserId,
-                RequesterUserId: ticketResource.RequesterUserId),
-            ct);
+        var assignmentResource = new AuthorizationResource(ticketResource.TicketId, effectiveDepartmentId,
+            effectiveTeamId, ticketResource.ClientId, ticketResource.AssignedUserId,
+            RequesterUserId: ticketResource.RequesterUserId);
+
+        // Updating a ticket is not itself assignment authority. Use the same
+        // effective-permission and resource-scope pipeline with the dedicated
+        // assignment capability; do not infer authority from a role name.
+        await authorization.EnsurePermissionAsync(actorUserId, "TICKET_ASSIGN_TEAM", assignmentResource, ct);
+        await authorization.EnsurePermissionAsync(actorUserId, "TICKET_UPDATE", assignmentResource, ct);
+
+        var now = clock.GetUtcNow();
+        var ruleVersions = await db.AssignmentAuthorityRules.AsNoTracking()
+            .Where(x => x.PermissionCode == "TICKET_ASSIGN_TEAM" && x.TargetRelation == "OWN_TEAM" &&
+                        x.Mode == "ASSIGN")
+            .OrderByDescending(x => x.Version)
+            .ToListAsync(ct);
+        var currentRule = ruleVersions.Where(x => x.ValidFrom <= now)
+            .OrderByDescending(x => x.Version)
+            .FirstOrDefault();
+
+        var activeMemberships = await (from membership in db.AdministrationUserRoles.AsNoTracking()
+                                       join role in db.AdministrationRoles.AsNoTracking() on membership.RoleId equals role.Id
+                                       where membership.UserId == actorUserId && membership.Active && role.Active
+                                       select membership).ToListAsync(ct);
+        var teamScopes = effectiveTeamId.HasValue && effectiveDepartmentId.HasValue
+            ? await db.AdministrationUserRoleScopes.AsNoTracking()
+                .Where(x => x.Active && x.ScopeType == "TEAM" && x.DepartmentId == effectiveDepartmentId && x.TeamId == effectiveTeamId)
+                .ToListAsync(ct)
+            : new List<AdministrationUserRoleScopeRow>();
+        var effectiveOwnTeamAuthority = teamScopes.Any(scope =>
+            scope.ValidFrom <= now && (scope.ValidTo == null || scope.ValidTo > now) &&
+            activeMemberships.Any(membership => membership.Id == scope.UserRoleId &&
+                membership.ValidFrom <= now && (membership.ValidTo == null || membership.ValidTo > now)));
+
+        var denial = Fr021AssignmentRuleEvaluator.DenialReason(
+            currentRule,
+            assignmentPermissionAndTicketScopeSatisfied: true,
+            effectiveOwnTeamAuthority: effectiveOwnTeamAuthority,
+            targetTeamIsActive: targetTeam is not null,
+            targetAssigneeIsValidForTeam: !assigneeUserId.HasValue ||
+                (targetUser is { Active: true } && targetUser.DepartmentId == effectiveDepartmentId && targetUser.TeamId == effectiveTeamId),
+            mode: "ASSIGN",
+            now: now);
+        if (denial is not null)
+            throw new UnauthorizedAccessException($"FR-021 assignment authority denied: {denial}.");
     }
 
     public async Task<TicketSearchCriteria> ScopeSearchAsync(long actorUserId, TicketSearchCriteria criteria, CancellationToken ct)

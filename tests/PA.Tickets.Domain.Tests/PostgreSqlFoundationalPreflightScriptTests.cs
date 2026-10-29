@@ -8,21 +8,21 @@ namespace PA.Tickets.Domain.Tests;
 
 public sealed class PostgreSqlFoundationalPreflightScriptTests
 {
-    private const string ScriptRelativePath = "tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql";
+    private const string ScriptRelativePath = "tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql";
     private const string RunnerRelativePath = "tests/scripts/invoke-postgresql-foundational-fingerprint.ps1";
-    private const string ExpectedSha256 = "2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8";
+    private const string ExpectedSha256 = "6092C5C53E8E1BEAC07F318D57475368FC6CF73050045758F65FF91750326342";
 
     [Fact]
     public void Successor_preflight_is_pinned_to_the_owner_identified_target_and_stays_read_only()
     {
         var script = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ScriptRelativePath));
 
-        Assert.Contains("TARGET: host localhost", script, StringComparison.Ordinal);
+        Assert.Contains("TARGET: IPv6 loopback ::1, port 5432", script, StringComparison.Ordinal);
         Assert.Contains("database pa_tickets_codex_e2e, role pa_tickets_codex", script, StringComparison.Ordinal);
         Assert.Contains("current_database() <> 'pa_tickets_codex_e2e'", script, StringComparison.Ordinal);
         Assert.Contains("current_user <> 'pa_tickets_codex'", script, StringComparison.Ordinal);
         Assert.Contains("inet_server_port() <> 5432", script, StringComparison.Ordinal);
-        Assert.Contains("inet_server_addr() <<= '127.0.0.0/8'::inet OR inet_server_addr() = '::1'::inet", script, StringComparison.Ordinal);
+        Assert.Contains("inet_server_addr() IS DISTINCT FROM '::1'::inet", script, StringComparison.Ordinal);
         Assert.DoesNotContain("pa_tickets_e2e_verify", script, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("current_user <> 'postgres'", script, StringComparison.OrdinalIgnoreCase);
 

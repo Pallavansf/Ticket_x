@@ -18,7 +18,7 @@ When beginning work, read in this order:
 
 If documents conflict, do not silently choose one. Identify the conflict, preserve the more restrictive safety boundary, and request/record an explicit owner decision. The roadmap remains the single source of truth for stage status until the owner changes that governance rule.
 
-The FRD decision register distinguishes owner-stated decisions from working defaults. Implement explicit owner-stated decisions after checking the canonical owner decision pack. A working default is not formal owner approval: use it only for safe, reversible work that does not change security posture, external contracts, destructive behavior or gated operations. If authority is unclear or records conflict, preserve the stricter safety boundary, record the exact conflict and continue independent safe work. General conversational permission does not replace the operation-specific authorization required for database/provider work.
+The FRD decision register distinguishes owner-stated decisions from working defaults. Implement explicit owner-stated decisions after checking the canonical owner decision pack. A working default is not formal owner approval: use it only for safe, reversible work that does not change security posture, external contracts, destructive behavior or gated operations. If authority is unclear or records conflict, preserve the stricter safety boundary, record the exact conflict and continue independent safe work. For the exact dedicated local E2E target, apply `LOCAL_E2E_POLICY_PROPOSED.md` only at its owner-adopted SHA-256 `A171054FB8440B06B3A15EE5242A6DF6402C31647FC128F0B8007924A24798B8`, as recorded in the canonical owner decision pack. No exception applies outside that exact target.
 
 ## 2. Mandatory task declaration
 
@@ -91,11 +91,11 @@ A slice is complete only when its stated acceptance criteria pass or its remaini
 - PostgreSQL is the only supported database (FRD DD-06). Do no Oracle connection, schema, data or artifact work. Existing Oracle files stay untouched and unmaintained.
 
 ### 7.2 Explicit authorization
-A conversational “proceed” or general owner approval is not automatically complete operational authorization. Before each database operation, verify the exact target, operation, operator, grants, scope, validity/expiry, revocation, recovery boundary and evidence retention required by the canonical process.
+For shared, protected and production environments, require the applicable exact-operation authorization. For the dedicated disposable local E2E target only, the owner-adopted `LOCAL_E2E_POLICY_PROPOSED.md` (SHA-256 `A171054FB8440B06B3A15EE5242A6DF6402C31647FC128F0B8007924A24798B8`) supplies standing read-only and bounded provider-test authorization; use exact target checks, bounded tests, evidence and cleanup controls. Schema migration execution still requires one explicit owner approval per reviewed batch. Destructive operations remain separate. The local policy does not apply elsewhere.
 
 Authorization for read-only catalog inspection does not authorize DDL/DML. Migration authorization does not automatically authorize provider-test writes/cleanup. Each scope must be explicit.
 
-The dedicated E2E target created by the owner — `localhost:5432`, database `pa_tickets_codex_e2e`, role `pa_tickets_codex` (FRD DD-07) — is **identification only**. Each operation against it still needs the owner-signed authorization packet defined in `SLICES.md` slice S5-01. No fallback target may be used.
+The dedicated E2E target created by the owner — `localhost:5432`, database `pa_tickets_codex_e2e`, role `pa_tickets_codex` (FRD DD-07) — is **identification only**. The local target may use the standing policy only after explicit owner adoption. No fallback target may be used.
 
 ### 7.3 Migration history and artifact integrity
 - Never infer applied migrations from object shape.
@@ -105,10 +105,10 @@ The dedicated E2E target created by the owner — `localhost:5432`, database `pa
 - Do not automatically retry uncertain commits. Classify uncertain outcomes as `UNKNOWN` and reconcile read-only.
 - Migration 026 is explicitly excluded and must not be executed or modified.
 - Oracle is out of scope (FRD DD-06). If it is ever needed, the PostgreSQL scripts are translated and only one database is active at a time.
-- New schema artifacts are PostgreSQL migrations in `database/migrations/postgresql/`, numbered above the highest existing number, written as **review drafts** in the style of `SLICES.md` §2, and never executed without a signed authorization packet.
+- New schema artifacts are PostgreSQL migrations in `database/migrations/postgresql/`, numbered above the highest existing number, written as **review drafts** in the style of `SLICES.md` §2, and never executed without the applicable owner-reviewed migration-batch approval (or stricter authorization outside local E2E).
 
 ### 7.4 Database test execution
-Only run provider tests when the exact test scope and target are authorized, the guard variables match the approved target, and the schema preconditions are verified. Cleanup must be limited to unique records created by that test and the cleanup boundary must be evidenced. Stop on target mismatch, unexpected schema, partial objects, unknown compatibility, or uncertain outcomes.
+Only run provider tests when the exact test scope and target are authorized by the active policy (standing local authorization if adopted, otherwise operation-specific), the guard variables match the approved target, and the schema preconditions are verified. Cleanup must be limited to unique records created by that test and the cleanup boundary must be evidenced. Stop on target mismatch, unexpected schema, partial objects, unknown compatibility, or uncertain outcomes.
 
 ## 8. Evidence and status integrity
 
@@ -161,3 +161,7 @@ For every task, use this instruction:
 - Clarifies the distinction between owner-stated decisions, working defaults and operation-specific authorization.
 - Explicitly directs agents to continue independent safe source/UI work when provider/database work is blocked.
 - Keeps all existing database, migration, credential, and Git safety boundaries intact.
+
+## 13. Adopted local E2E simplification (fixed local target only)
+
+See `LOCAL_E2E_POLICY_PROPOSED.md`, adopted at SHA-256 `A171054FB8440B06B3A15EE5242A6DF6402C31647FC128F0B8007924A24798B8` and recorded in the canonical owner decision pack. Adoption is prospective and does not rewrite prior approvals or evidence. It permits the fixed-target read-only inspections and bounded provider tests described there after target, fixture, sequence, schema and cleanup preconditions are confirmed. It does not waive schema review, per-batch migration approval, separate destructive-operation approval, test-owned cleanup, audit integrity, exact-target guardrails or nonlocal protections.

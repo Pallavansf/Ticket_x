@@ -1,0 +1,237 @@
+diff --git a/tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql b/tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql
+index 01d0ed9..61c985e 100644
+--- a/tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql
++++ b/tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql
+@@ -1,5 +1,5 @@
+--- PA_TICKETS PostgreSQL foundational DDL preflight proposal (unexecuted successor)
+--- TARGET: host localhost (must resolve to a loopback address), port 5432,
++-- PA_TICKETS PostgreSQL existing-database catalog fingerprint (review-only successor)
++-- TARGET: IPv6 loopback ::1, port 5432,
+ -- database pa_tickets_codex_e2e, role pa_tickets_codex
+ -- Target identification is not operation authorization. S5-01 remains blocked;
+ -- do not run this artifact unless its exact bytes and operation are authorized.
+@@ -25,8 +25,8 @@ BEGIN
+   IF v_major <> 18 THEN
+     RAISE EXCEPTION 'Wrong PostgreSQL major version: expected 18';
+   END IF;
+-  IF inet_server_addr() IS NULL OR NOT (inet_server_addr() <<= '127.0.0.0/8'::inet OR inet_server_addr() = '::1'::inet) THEN
+-    RAISE EXCEPTION 'Wrong server address: expected a local loopback address; actual=%', inet_server_addr();
++  IF inet_server_addr() IS DISTINCT FROM '::1'::inet THEN
++    RAISE EXCEPTION 'Wrong server address: expected IPv6 loopback ::1; actual=%', inet_server_addr();
+   END IF;
+   IF inet_server_port() <> 5432 THEN
+     RAISE EXCEPTION 'Wrong server port: expected 5432';
+@@ -57,12 +57,32 @@ FROM pg_class c
+ JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public'
+ ORDER BY c.relkind, c.relname;
++-- Schema metadata is descriptive only: owner and ACL are reported as catalog values.
++SELECT ns.nspname AS schema_name, pg_get_userbyid(ns.nspowner) AS owner_name,
++       ns.nspacl::text AS schema_acl
++FROM pg_catalog.pg_namespace AS ns
++WHERE ns.nspname NOT LIKE 'pg_%' AND ns.nspname <> 'information_schema'
++ORDER BY ns.nspname;
+ 
+-SELECT table_schema, table_name, column_name, ordinal_position,
+-       data_type, udt_schema, udt_name, is_nullable, column_default
+-FROM information_schema.columns
+-WHERE table_schema = 'public'
+-ORDER BY table_name, ordinal_position;
++-- pg_catalog inventory captures all visible public relation columns and preserves
++-- PostgreSQL-specific type, identity/generated, collation and expression details.
++SELECT ns.nspname AS schema_name, cls.relname AS relation_name,
++       att.attnum AS ordinal_position, att.attname AS column_name,
++       format_type(att.atttypid, att.atttypmod) AS formatted_type,
++       typ.typname AS internal_type_name, att.attnotnull AS not_null,
++       pg_get_expr(def.adbin, def.adrelid, true) AS default_expression,
++       att.attidentity AS identity_kind, att.attgenerated AS generated_kind,
++       coll.collname AS collation_name
++FROM pg_catalog.pg_attribute AS att
++JOIN pg_catalog.pg_class AS cls ON cls.oid = att.attrelid
++JOIN pg_catalog.pg_namespace AS ns ON ns.oid = cls.relnamespace
++JOIN pg_catalog.pg_type AS typ ON typ.oid = att.atttypid
++LEFT JOIN pg_catalog.pg_attrdef AS def
++  ON def.adrelid = att.attrelid AND def.adnum = att.attnum
++LEFT JOIN pg_catalog.pg_collation AS coll ON coll.oid = att.attcollation
++WHERE ns.nspname = 'public' AND att.attnum > 0 AND NOT att.attisdropped
++  AND cls.relkind IN ('r','p','v','m','f')
++ORDER BY ns.nspname, cls.relname, att.attnum;
+ 
+ SELECT n.nspname AS schema_name, c.relname AS relation_name,
+        con.conname, con.contype, pg_get_constraintdef(con.oid, true) AS definition
+@@ -84,7 +104,7 @@ SELECT ns.nspname AS schema_name, seq.relname AS sequence_name,
+        a.attname AS owned_by_column
+ FROM pg_class seq
+ JOIN pg_namespace ns ON ns.oid = seq.relnamespace
+-JOIN pg_sequence s ON s.seqrelid = seq.oid
++JOIN pg_catalog.pg_sequence s ON s.seqrelid = seq.oid
+ LEFT JOIN pg_depend dep ON dep.classid = 'pg_class'::regclass
+  AND dep.objid = seq.oid AND dep.deptype = 'a'
+ LEFT JOIN pg_attribute a ON a.attrelid = dep.refobjid AND a.attnum = dep.refobjsubid
+@@ -102,21 +122,11 @@ ORDER BY c.relname, a.attnum;
+ 
+ SELECT extname, extversion FROM pg_extension ORDER BY extname;
+ 
+--- Migration-history evidence. Object existence is reported, never treated as
+--- proof that a migration ran.
+-SELECT to_regclass('public."PA_TICKETS_SCHEMA_MIGRATION"') AS migration_ledger;
+-DO $$
+-DECLARE r record;
+-BEGIN
+-  IF to_regclass('public."PA_TICKETS_SCHEMA_MIGRATION"') IS NULL THEN
+-    RAISE NOTICE 'Migration ledger is absent; no applied identifiers are established.';
+-  ELSE
+-    FOR r IN EXECUTE 'SELECT "S_MIGRATION_ID", "S_MIGRATION_SHA256", "S_RELEASE_BASELINE", "S_TARGET_FINGERPRINT", "S_STATUS", "D_APPLIED_AT", "S_APPROVED_BY" FROM public."PA_TICKETS_SCHEMA_MIGRATION" ORDER BY "S_MIGRATION_ID"' LOOP
+-      RAISE NOTICE 'Ledger row: id=%, hash=%, baseline=%, target=%, status=%, applied_at=%, approved_by=%', r."S_MIGRATION_ID", r."S_MIGRATION_SHA256", r."S_RELEASE_BASELINE", r."S_TARGET_FINGERPRINT", r."S_STATUS", r."D_APPLIED_AT", r."S_APPROVED_BY";
+-    END LOOP;
+-  END IF;
+-END $$;
+-
++-- Migration history remains UNKNOWN: object shape and ledger presence do not prove
++-- execution provenance. Do not enumerate, interpret, or emit ledger row contents.
++SELECT 'UNKNOWN'::text AS migration_history_status,
++       (to_regclass('public."PA_TICKETS_SCHEMA_MIGRATION"') IS NOT NULL) AS ledger_object_present,
++       'No independently verified migration-history evidence supplied'::text AS basis;
+ -- Read-only duplicate checks. A missing table is reported as NOT_APPLICABLE;
+ -- an existing table is checked against the exact source key/predicate.
+ DO $$
+@@ -219,21 +229,125 @@ BEGIN
+   ELSE RAISE NOTICE 'NOT_APPLICABLE duplicate check: PA_TICKETS_APPROVAL_RULE_STEP'; END IF;
+ END $$;
+ 
+--- Baseline gate. Existing relevant objects or ledger rows require a reviewed
+--- catalog-definition comparison and approved adoption procedure; this script
+--- does not infer a baseline from object shape.
+-DO $$
+-DECLARE v_existing integer; v_ledger boolean;
+-BEGIN
+-  SELECT count(*) INTO v_existing
+-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+-  WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','i');
+-  SELECT to_regclass('public."PA_TICKETS_SCHEMA_MIGRATION"') IS NOT NULL INTO v_ledger;
+-  IF v_existing > 0 OR v_ledger THEN
+-    RAISE EXCEPTION 'Baseline not established: existing public objects or migration ledger require owner-approved adoption review';
+-  END IF;
+-END $$;
++-- Review-only expected-vs-observed inventory. The expected relation names are
++-- extracted from the immutable historical baseline artifact at commit
++-- 1bcc493d267e23e3e126b9b698fa4344ebe8588a (SHA-256
++-- 4F4EC0066DC62AAA61C75DB67177A25D152FBF6484CCB4711A942FD1DC58EC19).
++-- Presence/absence is reported, never interpreted as execution history or approval.
++WITH expected(object_kind, object_name) AS (
++  VALUES
++    ('TABLE', 'PA_TICKETS'),
++    ('TABLE', 'PA_TICKETS_APPROVAL'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_DELEGATION'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_HISTORY'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_INSTANCE'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_RULE'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_RULE_STEP'),
++    ('TABLE', 'PA_TICKETS_APPROVAL_RULE_VERSION'),
++    ('TABLE', 'PA_TICKETS_ASSIGNMENT'),
++    ('TABLE', 'PA_TICKETS_AUDIT'),
++    ('TABLE', 'PA_TICKETS_AUDIT_CHAIN_LOCK'),
++    ('TABLE', 'PA_TICKETS_AUDIT_MAINTENANCE'),
++    ('TABLE', 'PA_TICKETS_AUDIT_MAINTENANCE_TOKEN'),
++    ('TABLE', 'PA_TICKETS_BACKGROUND_JOB'),
++    ('TABLE', 'PA_TICKETS_DEPARTMENT'),
++    ('TABLE', 'PA_TICKETS_EVENT'),
++    ('TABLE', 'PA_TICKETS_IDEMPOTENCY'),
++    ('TABLE', 'PA_TICKETS_PERMISSION'),
++    ('TABLE', 'PA_TICKETS_ROLE'),
++    ('TABLE', 'PA_TICKETS_ROLE_PERMISSION'),
++    ('TABLE', 'PA_TICKETS_SLA'),
++    ('TABLE', 'PA_TICKETS_SLA_CALENDAR'),
++    ('TABLE', 'PA_TICKETS_SLA_PAUSE'),
++    ('TABLE', 'PA_TICKETS_SLA_POLICY'),
++    ('TABLE', 'PA_TICKETS_TEAM'),
++    ('TABLE', 'PA_TICKETS_USER'),
++    ('TABLE', 'PA_TICKETS_USER_CLIENT'),
++    ('TABLE', 'PA_TICKETS_USER_ROLE'),
++    ('TABLE', 'PA_TICKETS_WAITING_REASON'),
++    ('TABLE', 'PA_TICKETS_WORK_ITEM'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_INSTANCE'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_STEP'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_STEP_INSTANCE'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_STEP_INSTANCE_HISTORY'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_TRANSITION'),
++    ('TABLE', 'PA_TICKETS_WORKFLOW_VERSION'),
++    ('INDEX', 'IX_PA_TICKETS_APPROVAL_INSTANCE'),
++    ('INDEX', 'IX_PA_TICKETS_SLA_POLICY_TARGET'),
++    ('INDEX', 'IX_PA_TICKETS_USER_CLIENT_EFFECTIVE'),
++    ('INDEX', 'IX_PA_TICKETS_USER_ROLE_EFFECTIVE'),
++    ('INDEX', 'IX_PA_TICKETS_WAITING_REASON_EFFECTIVE'),
++    ('INDEX', 'UK_PA_TICKETS_USER_EMAIL_UPPER'),
++    ('INDEX', 'UX_PA_TICKETS_APRS_VERSION_TARGET'),
++    ('INDEX', 'UX_PA_TICKETS_ASSIGNMENT_ACTIVE'),
++    ('INDEX', 'UX_PA_TICKETS_BACKGROUND_JOB_DEDUPE'),
++    ('INDEX', 'UX_PA_TICKETS_IDEMPOTENCY_SCOPE_ACTOR_KEY'),
++    ('INDEX', 'UX_PA_TICKETS_IDEMPOTENCY_SCOPE_KEY'),
++    ('INDEX', 'UX_PA_TICKETS_STEP_INSTANCE_ONE'),
++    ('INDEX', 'UX_PA_TICKETS_WF_STEP_CODE'),
++    ('INDEX', 'UX_PA_TICKETS_WF_TRANSITION_CODE'),
++    ('INDEX', 'UX_PA_TICKETS_WFV_CODE'),
++    ('INDEX', 'UX_PA_TICKETS_WFV_ID_WF'),
++    ('INDEX', 'UX_PA_TICKETS_WORK_ITEM_TICKET_NO'),
++    ('INDEX', 'UX_PA_TICKETS_WORKFLOW_CODE'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_DELEGATION_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_HISTORY_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_INSTANCE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_RULE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_RULE_STEP_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_RULE_VERSION_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_APPROVAL_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_ASSIGNMENT_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_AUDIT_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_BACKGROUND_JOB_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_DEPARTMENT_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_EVENT_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_IDEMPOTENCY_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_PERMISSION_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_ROLE_PERMISSION_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_ROLE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_SLA_PAUSE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_SLA_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_TEAM_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_TICKET_NO_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_USER_CLIENT_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_USER_ROLE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_USER_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WAITING_REASON_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORK_ITEM_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_INSTANCE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_STEP_INSTANCE_HISTORY_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_STEP_INSTANCE_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_STEP_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_TRANSITION_SEQ'),
++    ('SEQUENCE', 'PA_TICKETS_WORKFLOW_VERSION_SEQ')
++), observed AS (
++  SELECT CASE c.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'PARTITIONED_TABLE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED_VIEW' WHEN 'f' THEN 'FOREIGN_TABLE' WHEN 'i' THEN 'INDEX' WHEN 'I' THEN 'PARTITIONED_INDEX' END AS object_kind,
++         c.relname AS object_name
++  FROM pg_catalog.pg_class AS c
++  JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
++  WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','f','S','i','I')
++), compared AS (
++  SELECT COALESCE(e.object_kind, o.object_kind) AS object_kind,
++         COALESCE(e.object_name, o.object_name) AS object_name,
++         CASE WHEN e.object_name IS NOT NULL AND o.object_name IS NOT NULL THEN 'EXPECTED_PRESENT'
++              WHEN e.object_name IS NOT NULL THEN 'MISSING_EXPECTED'
++              ELSE 'UNEXPECTED_OBSERVED' END AS inventory_status
++  FROM expected AS e
++  FULL OUTER JOIN observed AS o USING (object_kind, object_name)
++)
++SELECT 'HISTORICAL_BASELINE_CANDIDATE_NOT_ADOPTED'::text AS comparison_basis,
++       object_kind, object_name, inventory_status
++FROM compared
++ORDER BY object_kind, object_name, inventory_status;
+ 
++-- Ledger presence is reported separately; migration history is still UNKNOWN.
++SELECT 'UNKNOWN'::text AS migration_history_status,
++       (to_regclass('public."PA_TICKETS_SCHEMA_MIGRATION"') IS NOT NULL) AS ledger_object_present,
++       'Catalog shape and ledger rows do not establish applied history'::text AS basis;
+ -- A runner must require this marker and a successful SQL exit status; errors raise before it.
+ SELECT 'PREFLIGHT_COMPLETE' AS preflight_status, current_database() AS database_name, inet_server_addr() AS server_address, inet_server_port() AS server_port, current_user AS role_name;
+ 

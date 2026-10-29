@@ -20,19 +20,9 @@ public sealed class IncidentService(
         if (actor <= 0) throw new UnauthorizedAccessException("A server-authenticated actor is required.");
         if (string.IsNullOrWhiteSpace(command.Subject)) throw new ArgumentException("Incident subject is required.");
         if (command.SubCategoryId.HasValue && !command.RequestTypeId.HasValue) throw new ArgumentException("A Request Type is required when SubCategory is supplied.");
-        if (command.IncidentCommanderUserId is long commanderUserId)
-        {
-            var commander = await db.AdministrationUsers.AsNoTracking()
-                .SingleOrDefaultAsync(x => x.Id == commanderUserId && x.Active, ct)
-                ?? throw new ArgumentException("The incident commander is not active.");
-            await authorizer.EnsureCanAssignAsync(
-                actor,
-                new AuthorizationResource(0, null, null, null),
-                commander.DepartmentId,
-                commander.TeamId,
-                commanderUserId,
-                ct);
-        }
+        if (command.IncidentCommanderUserId is long commanderUserId &&
+            !await db.AdministrationUsers.AsNoTracking().AnyAsync(x => x.Id == commanderUserId && x.Active, ct))
+            throw new ArgumentException("The incident commander is not active.");
         if (!string.IsNullOrWhiteSpace(command.IdempotencyKey) && await db.Incidents.AnyAsync(x => x.IdempotencyKey == command.IdempotencyKey, ct))
             throw new InvalidOperationException("Incident request was already processed.");
 
@@ -43,6 +33,20 @@ public sealed class IncidentService(
             created = command.SubCategoryId.HasValue
                 ? await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, command.RequestTypeId, ServiceId: command.ServiceId, CategoryId: command.CategoryId, SubCategoryId: command.SubCategoryId, PriorityId: command.PriorityId), ct)
                 : await tickets.CreateAsync(new CreateTicketCommand(TicketType.Incident, command.Subject, command.Description, command.RequesterUserId, actor, PriorityId: command.PriorityId), ct);
+
+            if (command.IncidentCommanderUserId is long assignedCommanderId)
+            {
+                var commander = await db.AdministrationUsers.AsNoTracking()
+                    .SingleAsync(x => x.Id == assignedCommanderId && x.Active, ct);
+                await authorizer.EnsureCanAssignAsync(
+                    actor,
+                    new AuthorizationResource(created.Id, created.CurrentDepartmentId, created.CurrentTeamId, null,
+                        created.CurrentAssignee, RequesterUserId: command.RequesterUserId),
+                    commander.DepartmentId,
+                    commander.TeamId,
+                    assignedCommanderId,
+                    ct);
+            }
 
             var now = clock.GetUtcNow();
             var row = new IncidentRow

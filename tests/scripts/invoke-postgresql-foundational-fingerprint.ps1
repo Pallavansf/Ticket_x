@@ -11,8 +11,8 @@ param(
 # REVIEW-ONLY input format: these checks validate structure, not provenance.
 # No profile/reference is trusted and this script has no database client path.
 $ErrorActionPreference = 'Stop'
-$expectedArtifactPath = 'tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql'
-$expectedSha256 = '2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8'
+$expectedArtifactPath = 'tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql'
+$expectedSha256 = '6092C5C53E8E1BEAC07F318D57475368FC6CF73050045758F65FF91750326342'
 $expectedTarget = [ordered]@{
     host = 'localhost'
     port = 5432

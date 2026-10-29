@@ -132,3 +132,31 @@ authorization is complete.
 - Owner-controlled certificate thumbprint, key custody, local policy and revocation mechanism: **Not provisioned or verified**
 - S5-01 read-only operation authorization: **Not authorized by this proposal**
 
+## Owner-approved simplified local read-only policy direction — addendum (2026-10-28)
+
+This addendum records the owner's later simplification direction without
+rewriting the previously reviewed amendment body or its historical approved
+SHA-256 (`B78980670B1E0E8E79C333A36D7B93F46633C02B2172088C8B33469BED28A18E`).
+The owner-provided policy direction permits exactly two read-only operations
+against `::1:5432`, database `pa_tickets_codex_e2e`, role `pa_tickets_codex`,
+using the existing `PA_TICKETS_E2E_DB_PASSWORD` loader and the two raw-byte
+artifact hashes recorded in the canonical owner decision pack: privilege
+preflight `C9B672971C5BFD58B17B0D42C70734BA2BBA315DF59E591999DA231DDA93F08C`
+and S5-03 fingerprint
+`2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8`.
+
+For these operations only, the direction replaces CNG keys, signed approval
+and revocation envelopes, ProgramData trust/custody provisioning, and repeated
+per-operation owner forms. It retains strict target/artifact allowlists,
+same-connection read-only transaction and target checks before catalog SQL,
+credential secrecy, bounded timeouts, sanitized evidence under the project
+`test-results/evidence` path, and stop/no-retry handling. It does not verify the
+Windows PostgreSQL process/executable. Writes, schema changes, migrations,
+provisioning, grants, seeds, provider-test writes and cleanup remain separately
+controlled. All other environments retain their existing independent identity
+and authorization requirements.
+
+The canonical decision pack records the supplied owner direction and actual
+record-entry timestamp. No owner-message timestamp, digital signature, live
+privilege fact, or database execution is asserted by this addendum.
+

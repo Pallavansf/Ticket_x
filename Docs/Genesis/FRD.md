@@ -43,7 +43,7 @@ Design principles:
 - Standards-aligned by design (NFR-014), without claiming certification.
 
 ### 2.3 Delivery milestones
-Source-only and Angular work in a later milestone may proceed in parallel with an earlier one when its dependencies are independent. Provider-backed acceptance always follows the authorization gates in `SOP.md` and §7.
+Source-only and Angular work in a later milestone may proceed in parallel with an earlier one when its dependencies are independent. Provider-backed acceptance always follows the active authorization gates in `SOP.md` and §7. A proposed, owner-adopted standing policy may simplify only disposable local E2E execution; it does not relax functional acceptance.
 
 | Milestone | Scope | Exit evidence |
 |---|---|---|
@@ -307,7 +307,7 @@ The API shall validate inputs, enforce authorization, return consistent error re
 - Status: **PARTIAL** — source tests exist; complete operational telemetry and API/browser acceptance remain incomplete.
 
 ### FR-016 — PostgreSQL schema and migrations
-PostgreSQL schema changes shall be based on an approved baseline, exact artifact provenance, target identity verification, and an operation-specific execution/recovery plan.
+PostgreSQL schema changes shall be based on verified compatibility, exact artifact provenance, target identity verification, and an execution/recovery plan. For adopted disposable local E2E, owner approval may cover one reviewed migration batch; no historical migration application is inferred. Other environments retain their stricter operational authorization.
 - Acceptance: exact migration bytes/hash are verified; current target and catalog are read-only inspected first; expected/observed definitions are reconciled; transaction outcome and post-apply catalog evidence are retained.
 - Status: **BLOCKED** — authorization and migration history remain unresolved. Migration 026 is excluded.
 
@@ -351,7 +351,7 @@ The system shall model teams, their Managers, team members and the grouping of M
 - **Hard limits (not configurable):** the assignee must be an active, non-Spectator user; a rule never widens the assigner's reach beyond the specific ticket it grants; every assignment is authorized on the server, idempotent and audited; Spectator deny precedence applies.
 - **Notification:** the target's Manager receives a Message Center notice (FR-031), created after commit.
 - Acceptance: each default rule has positive and negative tests; out-of-scope, revoked and expired relations are denied; a disabled rule denies; the Manager notification and assignment history (mode, via) are produced; rule changes are audited and honor version and effective dates; membership change during assignment is tested.
-- Status: **PARTIAL** — assignment history and scoped reassignment exist (migration 010, `POST /api/v1/work-items/{publicId}/assign`) and delegation exists for administration (migration 035); configurable assignment rules and delegate mode do not (repository inspection; not test-verified).
+- Status: **PARTIAL** — assignment history and scoped reassignment exist (migration 010, `POST /api/v1/work-items/{publicId}/assign`) and delegation exists for administration (migration 035). Source now requires the dedicated `TICKET_ASSIGN_TEAM` capability plus `TICKET_UPDATE`, destination scope, and a persisted enabled/effective `ASSIGN` + `OWN_TEAM` rule; ordinary USER defaults do not include the assignment capability. Cross-team/group delegation, manager notification/acceptance, and full R1–R4 coverage remain unimplemented. The permission definition is `TICKET_ASSIGN_TEAM / TICKETS / ASSIGN / RECORD / BUSINESS / read-only=false`; adding this catalogue definition does not grant it to any role. See the M1 source reconciliation in the owner decision pack.
 
 ### FR-022 — Team performance visibility
 The system shall provide performance views scoped by role: a Manager sees their own team; a Manager Admin sees the teams of their grouped Managers (per-Manager breakdown and aggregate); Super Admin and Spectator see organization-wide.

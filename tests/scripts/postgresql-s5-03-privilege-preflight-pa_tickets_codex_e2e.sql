@@ -45,8 +45,8 @@ WHERE r.rolname = current_user;
 WITH RECURSIVE membership_paths(member_oid, role_oid, depth, oid_path) AS (
     SELECT m.member, m.roleid, 1, ARRAY[m.member, m.roleid]::oid[]
     FROM pg_catalog.pg_auth_members AS m
-    JOIN pg_catalog.pg_roles AS current_role ON current_role.oid = m.member
-    WHERE current_role.rolname = current_user
+    JOIN pg_catalog.pg_roles AS member_candidate ON member_candidate.oid = m.member
+    WHERE member_candidate.rolname = current_user
   UNION ALL
     SELECT m.member, m.roleid, p.depth + 1, p.oid_path || m.roleid
     FROM membership_paths AS p

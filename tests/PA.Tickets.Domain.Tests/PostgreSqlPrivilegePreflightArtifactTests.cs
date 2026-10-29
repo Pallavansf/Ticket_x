@@ -6,7 +6,7 @@ namespace PA.Tickets.Domain.Tests;
 public sealed class PostgreSqlPrivilegePreflightArtifactTests
 {
     private const string ArtifactPath = "tests/scripts/postgresql-s5-03-privilege-preflight-pa_tickets_codex_e2e.sql";
-    private const string ExpectedSha256 = "C9B672971C5BFD58B17B0D42C70734BA2BBA315DF59E591999DA231DDA93F08C";
+    private const string ExpectedSha256 = "0BFC0FFC556103A75CD3F6A722A724EBF41F39F1F3523ECE986DFFA36C4AB034";
 
     [Fact]
     public void Privilege_preflight_is_exact_target_pinned_and_hash_bound()

@@ -70,17 +70,43 @@ public sealed class LocalE2eS503ReadOnlyInspectionTests
     }
 
     [Fact]
-    public void Privilege_evidence_must_be_fresh_and_read_only()
+    public void Fixed_local_policy_accepts_owner_role_write_capabilities_but_requires_fresh_bound_evidence()
     {
-        LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(PrivilegeEvidence(), Now);
+        LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+            "S5-03_READ_ONLY_FINGERPRINT",
+            PrivilegeEvidence() with
+            {
+                CanWriteApplicationTables = true,
+                CanWriteSchema = true,
+                CanWriteSequences = true
+            }, Now);
+        LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+            "LOCAL_E2E_POSTGRES_PRIVILEGE_PREFLIGHT",
+            PrivilegeEvidence() with { CanWriteApplicationTables = true, CanWriteSchema = true, CanWriteSequences = true }, Now);
         Assert.Throws<LocalE2eS503InspectionException>(() =>
-            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(null, Now));
+            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence("S5-03_READ_ONLY_FINGERPRINT", null, Now));
         Assert.Throws<LocalE2eS503InspectionException>(() =>
             LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
-                PrivilegeEvidence() with { CanWriteSchema = true }, Now));
+                "S5-03_READ_ONLY_FINGERPRINT",
+                PrivilegeEvidence() with { Role = "other_role" }, Now));
         Assert.Throws<LocalE2eS503InspectionException>(() =>
             LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+                "S5-03_READ_ONLY_FINGERPRINT",
+                PrivilegeEvidence() with { TargetHost = "127.0.0.1" }, Now));
+        Assert.Throws<LocalE2eS503InspectionException>(() =>
+            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+                "S5-03_READ_ONLY_FINGERPRINT",
                 PrivilegeEvidence() with { CapturedAtUtc = Now.AddMinutes(-6) }, Now));
+        Assert.Throws<LocalE2eS503InspectionException>(() =>
+            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+                "S5-03_READ_ONLY_FINGERPRINT",
+                PrivilegeEvidence() with { IsSuperuser = true }, Now));
+        Assert.Throws<LocalE2eS503InspectionException>(() =>
+            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence(
+                "S5-03_READ_ONLY_FINGERPRINT",
+                PrivilegeEvidence() with { EffectiveRoleMemberships = ["writer_role"] }, Now));
+        Assert.Throws<LocalE2eS503InspectionException>(() =>
+            LocalE2eS503ReadOnlyInspection.ValidatePrivilegeEvidence("SCHEMA_WRITE", PrivilegeEvidence(), Now));
     }
 
     [Theory]

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -29,14 +29,17 @@
     <ProjectReference Include="..\..\src\PA.Tickets.Application\PA.Tickets.Application.csproj" />
     <ProjectReference Include="..\..\src\PA.Tickets.Api\PA.Tickets.Api.csproj" />
     <ProjectReference Include="..\..\tools\PA.Tickets.Migration026Runner\PA.Tickets.Migration026Runner.csproj" />
+    <ProjectReference Include="..\..\tools\PA.Tickets.LocalE2eReadOnlyRunner\PA.Tickets.LocalE2eReadOnlyRunner.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="xunit.runner.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="..\..\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql" Link="PinnedS503Artifact\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql" Link="PinnedS503Artifact\tests\scripts\postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\tests\scripts\postgresql-s5-03-privilege-preflight-pa_tickets_codex_e2e.sql" Link="PinnedPrivilegePreflight\tests\scripts\postgresql-s5-03-privilege-preflight-pa_tickets_codex_e2e.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Docs\reconciliation\proposed\postgresql\M1_TICKET_ASSIGN_TEAM_PERMISSION_CATALOGUE_REVIEW.sql" Link="M1AssignmentPermissionReview\M1_TICKET_ASSIGN_TEAM_PERMISSION_CATALOGUE_REVIEW.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\Docs\reconciliation\proposed\postgresql\M1_TICKET_READ_UPDATE_PERMISSION_BOOTSTRAP_REVIEW.sql" Link="M1TicketPermissionBootstrap\M1_TICKET_READ_UPDATE_PERMISSION_BOOTSTRAP_REVIEW.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>

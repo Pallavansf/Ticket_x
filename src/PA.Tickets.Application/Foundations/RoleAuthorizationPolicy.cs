@@ -20,6 +20,7 @@ public static class RoleAuthorizationPolicy
 
     public static bool AllowsPermissionCode(string role, string permissionCode) =>
         IsCanonicalPermissionCode(permissionCode) &&
+        !(role == User && permissionCode == "TICKET_ASSIGN_TEAM") &&
         !(role == Spectator && permissionCode == "AUDIT_EXPORT");
 
     public static bool IsFixedCorePermission(string role, string permissionCode) =>

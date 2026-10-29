@@ -140,26 +140,46 @@ confidentiality, worker retry behavior, and audit outcomes.
 **Objective:** reconcile the selected source baseline with an independently
 verified PostgreSQL catalog using the hardened read-only adapter.
 
-**Verified:** source-level adapter, deterministic snapshots, target guard,
-preflight hash verifier, and authorization packet are implemented/tested.
+**Verified:** the owner-adopted local E2E policy is recorded by exact hash.
+The S5-03 fingerprint completed against the fixed local target in a read-only
+transaction, verified same-session identity, captured 13 result sets / 1,450
+rows, rolled back, and disposed the connection. The owner-authorized one-shot
+sequence inspection completed read-only and found no collision for the first
+repository test at that captured snapshot. The first PostgreSQL repository
+persistence test then passed once against the fixed target, persisted and
+reloaded its uniquely identified ticket, and completed its bounded exact-ID
+cleanup. Details are recorded in the canonical owner decision pack.
 
-**Blocked:** no owner-approved target identity, least-privilege role, baseline
-adoption, provenance, evidence custody, or live provider authorization exists.
-Migration history is unknown; migration 026 remains separate.
+**Remaining:** S5-03 remains partial because the fingerprint's name-level
+comparison is not exact catalog-definition equivalence and D01 baseline
+adoption remains unresolved. The catalog exposes missing migration-034
+permission/grant metadata and absent scope/delegation and ledger objects;
+communication/notification objects are outside this first core persistence
+acceptance. Migration history remains `UNKNOWN`. The completed sequence
+inspection is a point-in-time result; the test consumed event/audit/maintenance
+sequence values and those generated values were not separately inventoried
+afterward. No schema operation was authorized by the provider-test policy.
+Migration 026 remains separate.
 
-**Dependencies:** D01-D03, D09-D11 and independent hostname/peer/TLS policy.
+**Dependencies:** exact baseline/definition reconciliation, approved schema
+batch before schema changes, and current sequence/schema preconditions before
+each provider test. The adopted local E2E policy applies only to the fixed
+disposable target; other environments retain their stricter controls.
 
 **Exit evidence:** signed authorization, exact artifact hash, read-only catalog
 result, expected/observed diff, target identity evidence, and retention record.
 
-**Downstream block:** Stage 6 cannot claim persistence readiness.
+**Downstream:** Stage 6 now has one passing repository persistence result;
+core lifecycle and full M1 acceptance remain open.
 
 ### Stage 6 — Persistence integration and full end-to-end acceptance
 
 **Objective:** validate real Angular-to-API-to-PostgreSQL behavior across
 roles, lifecycles, scopes, attachments, reports, audit, and failure paths.
 
-**Status:** `BLOCKED` by Stage 5 and unresolved provider/owner decisions.
+**Status:** `PARTIAL` — the first repository persistence test passed and
+cleaned its exact fixture. Core lifecycle, Incident atomicity, authenticated
+API/frontend workflows, and broader provider acceptance remain unverified.
 
 **Exit evidence:** isolated persisted fixtures, HTTP and browser matrices,
 concurrency/revocation evidence, cleanup/retention record, and no protected

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using PA.Tickets.Application;
+using PA.Tickets.Application.Foundations;
 using PA.Tickets.Application.Tickets;
 using PA.Tickets.Domain.Tickets;
 using PA.Tickets.Infrastructure;
@@ -10,11 +11,16 @@ using PA.Tickets.Infrastructure.Execution;
 using PA.Tickets.Infrastructure.Persistence;
 using PA.Tickets.Infrastructure.Reporting;
 using PA.Tickets.Infrastructure.Tickets;
+using Xunit.Abstractions;
 
 namespace PA.Tickets.Domain.Tests;
 
 public sealed class PostgreSqlTicketPersistenceTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public PostgreSqlTicketPersistenceTests(ITestOutputHelper output) => _output = output;
+
     [Fact]
     public async Task Ef_ticket_repository_persists_and_reloads_a_ticket_without_authorization_facts()
     {
@@ -24,6 +30,24 @@ public sealed class PostgreSqlTicketPersistenceTests
         var number = $"PERSIST-{ticketId}";
         var now = DateTimeOffset.UtcNow;
         var ticket = Ticket.Create(ticketId, number, TicketType.Request, "Repository persistence proof", "provider-backed repository test", 1001, 1001, now);
+        var ticketPersisted = false;
+        _output.WriteLine($"FixtureTicketId={ticketId}; FixtureTicketNumber={number}");
+
+        // A collision must fail before writes; the cleanup below is enabled only
+        // after this exact fixture has been successfully persisted.
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+            var ticketIdText = ticketId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var identityOccupied = await db.Tickets.AsNoTracking().AnyAsync(x => x.Id == ticketId || x.Number == number)
+                || await db.WorkItems.AsNoTracking().AnyAsync(x => x.TicketId == ticketId)
+                || await db.Assignments.AsNoTracking().AnyAsync(x => x.TicketId == ticketId)
+                || await db.Events.AsNoTracking().AnyAsync(x => x.TicketId == ticketId)
+                || await db.Audits.AsNoTracking().AnyAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketIdText)
+                || await db.AuditChainLocks.AsNoTracking().AnyAsync(x => x.EntityType == "TICKET" && x.EntityId == ticketIdText);
+            Assert.False(identityOccupied,
+                "The generated fixture identity already exists; stop without cleanup or retry using a new explicit run.");
+        }
 
         try
         {
@@ -31,6 +55,7 @@ public sealed class PostgreSqlTicketPersistenceTests
             {
                 var repository = scope.ServiceProvider.GetRequiredService<ITicketRepository>();
                 await repository.AddAsync(ticket, CancellationToken.None);
+                ticketPersisted = true;
             }
 
             await using (var scope = provider.CreateAsyncScope())
@@ -55,13 +80,19 @@ public sealed class PostgreSqlTicketPersistenceTests
         }
         finally
         {
-            await using var scope = provider.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
-            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_TICKET_ID"" = {ticketId}");
-            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORK_ITEM"" where ""N_TICKET_ID"" = {ticketId}");
-            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {ticketId}");
-            await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
-            await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
+            if (ticketPersisted)
+            {
+                await using var scope = provider.CreateAsyncScope();
+                var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+                await using var cleanup = await db.Database.BeginTransactionAsync();
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_TICKET_ID"" = {ticketId}");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORK_ITEM"" where ""N_TICKET_ID"" = {ticketId}");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {ticketId}");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({ticketId})");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_AUDIT_CHAIN_LOCK"" where ""S_ENTITY_TYPE"" = 'TICKET' and ""S_ENTITY_ID"" = {ticketId.ToString()}");
+                await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
+                await cleanup.CommitAsync();
+            }
         }
     }
 
@@ -72,17 +103,23 @@ public sealed class PostgreSqlTicketPersistenceTests
 
         await using var provider = BuildProvider();
         var createdIds = new List<long>();
+        LifecycleAuthorizationFixture? fixture = null;
 
         try
         {
+            var classification = await RequireActiveClassificationReferenceAsync(provider);
+            fixture = await CreateLifecycleAuthorizationFixtureAsync(provider);
+            _output.WriteLine($"FixtureActorId={fixture.ActorId}; FixtureAssigneeId={fixture.AssigneeId}; FixtureDepartmentId={fixture.DepartmentId}; FixtureTeamId={fixture.TeamId}; FixtureRoleId={fixture.RoleId}");
             foreach (var type in Enum.GetValues<TicketType>())
             {
                 await using var scope = provider.CreateAsyncScope();
                 var service = scope.ServiceProvider.GetRequiredService<ITicketLifecycleService>();
-                var created = await service.CreateAsync(new CreateTicketCommand(type, $"PostgreSQL E2E {type} {Guid.NewGuid():N}", "provider boundary regression", 1001, 1001), CancellationToken.None);
+                var created = await service.CreateAsync(new CreateTicketCommand(type, $"PostgreSQL E2E {type} {Guid.NewGuid():N}", "provider boundary regression", fixture.ActorId, fixture.ActorId), CancellationToken.None);
                 createdIds.Add(created.Id);
+                await AddExactTicketScopeAsync(scope.ServiceProvider.GetRequiredService<TicketsDbContext>(), fixture, created.Id);
 
-                var classified = await service.ClassifyAsync(created.Id, 2001, 3001, 4001, 2, 1001, CancellationToken.None);
+                var classified = await service.ClassifyAsync(created.Id, classification.ServiceId, classification.CategoryId,
+                    classification.RequestTypeId, 2, fixture.ActorId, CancellationToken.None);
                 Assert.Equal(TicketStatus.Classified, classified.Status);
                 Assert.StartsWith(Prefix(type), classified.Number, StringComparison.Ordinal);
                 var auditRows = await scope.ServiceProvider.GetRequiredService<TicketsDbContext>().Audits
@@ -98,37 +135,43 @@ public sealed class PostgreSqlTicketPersistenceTests
             {
                 await using var scope = provider.CreateAsyncScope();
                 var service = scope.ServiceProvider.GetRequiredService<ITicketLifecycleService>();
-                var routed = await service.RouteAsync(createdIds[0], 501, 601, 1001, CancellationToken.None);
+                var routed = await service.RouteAsync(createdIds[0], fixture.DepartmentId, fixture.TeamId, fixture.ActorId, CancellationToken.None);
                 Assert.Equal(TicketStatus.Routed, routed.Status);
                 var workItem = Assert.Single(routed.WorkItems);
                 routedWorkItemId = workItem.Id;
                 Assert.EndsWith("-WI-001", workItem.Number, StringComparison.Ordinal);
+                var assigned = await service.ReassignAsync(createdIds[0], workItem.Id, fixture.AssigneeId, fixture.ActorId, "M1 exact-scope fixture", CancellationToken.None);
+                Assert.Equal(fixture.AssigneeId, Assert.Single(assigned.WorkItems).AssignedToUserId);
             }
 
             {
                 await using var scope = provider.CreateAsyncScope();
                 var service = scope.ServiceProvider.GetRequiredService<ITicketLifecycleService>();
-                var reloaded = await service.GetAsync(createdIds[0], 1001, CancellationToken.None);
+                var reloaded = await service.GetAsync(createdIds[0], fixture.ActorId, CancellationToken.None);
                 Assert.Equal(TicketStatus.Routed, reloaded.Status);
-                Assert.Equal(501, reloaded.CurrentDepartmentId);
-                Assert.Equal(601, reloaded.CurrentTeamId);
-                Assert.Contains(reloaded.WorkItems, x => x.Id == routedWorkItemId && x.Status == "PENDING");
+                Assert.Equal(fixture.DepartmentId, reloaded.CurrentDepartmentId);
+                Assert.Equal(fixture.TeamId, reloaded.CurrentTeamId);
+                Assert.Contains(reloaded.WorkItems, x => x.Id == routedWorkItemId && x.Status == "ASSIGNED" && x.AssignedToUserId == fixture.AssigneeId);
             }
         }
         finally
         {
-            if (createdIds.Count > 0)
+            if (fixture is not null)
             {
                 await using var cleanupScope = provider.CreateAsyncScope();
                 var db = cleanupScope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+                await using var cleanup = await db.Database.BeginTransactionAsync();
                 foreach (var id in createdIds.Distinct())
                 {
                     await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_ASSIGNMENT"" where ""N_TICKET_ID"" = {id}");
                     await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_WORK_ITEM"" where ""N_TICKET_ID"" = {id}");
                     await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_EVENT"" where ""N_TICKET_ID"" = {id}");
                     await db.Database.ExecuteSqlInterpolatedAsync($@"select pa_tickets_maintenance_delete_audit_for_ticket({id})");
+                    await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS_AUDIT_CHAIN_LOCK"" where ""S_ENTITY_TYPE"" = 'TICKET' and ""S_ENTITY_ID"" = {id.ToString()}");
                     await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {id}");
                 }
+                await DeleteLifecycleAuthorizationFixtureAsync(db, fixture);
+                await cleanup.CommitAsync();
             }
         }
     }
@@ -442,6 +485,190 @@ public sealed class PostgreSqlTicketPersistenceTests
                 await db.Database.ExecuteSqlInterpolatedAsync($@"delete from ""PA_TICKETS"" where ""N_TICKET_ID"" = {ticketId}");
             }
         }
+    }
+
+    private sealed record LifecycleAuthorizationFixture(
+        long ActorId, long AssigneeId, long DepartmentId, long TeamId, long RoleId,
+        long MembershipId, long RuleId, string Provenance);
+
+    private sealed record ClassificationReference(long ServiceId, long CategoryId, long RequestTypeId);
+
+    private static async Task<ClassificationReference> RequireActiveClassificationReferenceAsync(ServiceProvider provider)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+        var now = DateTimeOffset.UtcNow;
+        var reference = await (from requestType in db.CatalogueRequestTypes.AsNoTracking()
+                               join service in db.CatalogueServices.AsNoTracking() on requestType.ServiceId equals service.Id
+                               join category in db.CatalogueCategories.AsNoTracking()
+                                   on new { requestType.ServiceId, requestType.CategoryId }
+                                   equals new { category.ServiceId, CategoryId = category.Id }
+                               where requestType.Active && requestType.Status == "PUBLISHED" &&
+                                     requestType.EffectiveFrom <= now && (requestType.EffectiveTo == null || requestType.EffectiveTo > now) &&
+                                     service.Active && service.EffectiveFrom <= now && (service.EffectiveTo == null || service.EffectiveTo > now) &&
+                                     category.Active && category.EffectiveFrom <= now && (category.EffectiveTo == null || category.EffectiveTo > now)
+                               orderby requestType.Id
+                               select new ClassificationReference(service.Id, category.Id, requestType.Id))
+            .FirstOrDefaultAsync();
+        return reference ?? throw new InvalidOperationException(
+            "No active, published, effective request type with active service/category exists; no test fixture writes were started.");
+    }
+
+    private static async Task<LifecycleAuthorizationFixture> CreateLifecycleAuthorizationFixtureAsync(ServiceProvider provider)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<TicketsDbContext>();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        var now = DateTimeOffset.UtcNow;
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var provenance = $"M1-LIFECYCLE-TEST:{suffix}";
+
+        var permissions = await db.AdministrationPermissions.AsNoTracking()
+            .Where(x => x.Code == "TICKET_READ" || x.Code == "TICKET_UPDATE" || x.Code == "TICKET_ASSIGN_TEAM")
+            .ToDictionaryAsync(x => x.Code, StringComparer.Ordinal);
+        foreach (var code in new[] { "TICKET_READ", "TICKET_UPDATE", "TICKET_ASSIGN_TEAM" })
+        {
+            if (!permissions.TryGetValue(code, out var permission) || !permission.Active ||
+                permission.ModuleCode != "TICKETS" || permission.ScopeClass != "RECORD" ||
+                (code == "TICKET_READ" && (permission.ActionCode != "VIEW" || permission.SecurityClass != "READ_ONLY" || !permission.ReadOnly)) ||
+                (code == "TICKET_UPDATE" && (permission.ActionCode != "EDIT" || permission.SecurityClass != "BUSINESS" || permission.ReadOnly)) ||
+                (code == "TICKET_ASSIGN_TEAM" && (permission.ActionCode != "ASSIGN" || permission.SecurityClass != "BUSINESS" || permission.ReadOnly)))
+                throw new InvalidOperationException($"Required canonical permission metadata is absent or mismatched: {code}.");
+        }
+
+        var actorId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_USER_SEQ", id => db.AdministrationUsers.AnyAsync(x => x.Id >= id));
+        var actor = new AdministrationUserRow
+        {
+            Id = actorId, UserCode = $"M1_ACTOR_{suffix}", LoginName = $"m1_actor_{suffix}",
+            DisplayName = "M1 lifecycle test actor", DepartmentId = null, TeamId = null,
+            Active = true, CreatedAt = now, CreatedBy = actorId
+        };
+        db.AdministrationUsers.Add(actor);
+        await db.SaveChangesAsync();
+
+        var departmentId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_DEPARTMENT_SEQ", id => db.AdministrationDepartments.AnyAsync(x => x.Id >= id));
+        var teamId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_TEAM_SEQ", id => db.AdministrationTeams.AnyAsync(x => x.Id >= id));
+        var department = new AdministrationDepartmentRow
+        {
+            Id = departmentId, Code = $"M1_{suffix}", Name = "M1 lifecycle test department",
+            Active = true, CreatedAt = now, CreatedBy = actorId
+        };
+        db.AdministrationDepartments.Add(department);
+        await db.SaveChangesAsync();
+        var team = new AdministrationTeamRow
+        {
+            Id = teamId, DepartmentId = departmentId, Code = $"M1_{suffix}", Name = "M1 lifecycle test team",
+            Active = true, CreatedAt = now, CreatedBy = actorId
+        };
+        db.AdministrationTeams.Add(team);
+        await db.SaveChangesAsync();
+
+        var assigneeId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_USER_SEQ", id => db.AdministrationUsers.AnyAsync(x => x.Id >= id));
+        var assignee = new AdministrationUserRow
+        {
+            Id = assigneeId, UserCode = $"M1_ASSIGNEE_{suffix}", LoginName = $"m1_assignee_{suffix}",
+            DisplayName = "M1 lifecycle test assignee", DepartmentId = departmentId, TeamId = teamId,
+            Active = true, CreatedAt = now, CreatedBy = actorId
+        };
+        db.AdministrationUsers.Add(assignee);
+        actor.DepartmentId = departmentId;
+        actor.TeamId = teamId;
+        await db.SaveChangesAsync();
+
+        var roleId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_ROLE_SEQ", id => db.AdministrationRoles.AnyAsync(x => x.Id >= id));
+        var role = new AdministrationRoleRow
+        {
+            Id = roleId, Code = $"M1_TEST_{suffix}", Name = "M1 lifecycle test role",
+            SystemRole = false, Active = true
+        };
+        db.AdministrationRoles.Add(role);
+        await db.SaveChangesAsync();
+
+        var membershipId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_USER_ROLE_SEQ", id => db.AdministrationUserRoles.AnyAsync(x => x.Id >= id));
+        db.AdministrationUserRoles.Add(new AdministrationUserRoleRow
+        {
+            Id = membershipId, UserId = actorId, RoleId = roleId, ValidFrom = now.AddMinutes(-1),
+            Active = true, CreatedAt = now, CreatedBy = actorId
+        });
+        await db.SaveChangesAsync();
+
+        foreach (var code in new[] { "TICKET_READ", "TICKET_UPDATE", "TICKET_ASSIGN_TEAM" })
+        {
+            var permissionId = permissions[code].Id;
+            var grantId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_ROLE_PERMISSION_SEQ", id => db.AdministrationRolePermissions.AnyAsync(x => x.Id >= id));
+            db.AdministrationRolePermissions.Add(new AdministrationRolePermissionRow
+            {
+                Id = grantId, RoleId = roleId, PermissionId = permissionId,
+                ValidFrom = now.AddMinutes(-1), EffectiveStatus = EffectiveGrantAuthorization.Active,
+                ProvenanceRef = provenance, Active = true, UpdatedAt = now, UpdatedBy = actorId
+            });
+        }
+
+        var teamScopeId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_ROLE_SCOPE_SEQ", id => db.AdministrationUserRoleScopes.AnyAsync(x => x.Id >= id));
+        db.AdministrationUserRoleScopes.Add(new AdministrationUserRoleScopeRow
+        {
+            Id = teamScopeId, UserRoleId = membershipId, ScopeType = "TEAM", DepartmentId = departmentId,
+            TeamId = teamId, ValidFrom = now.AddMinutes(-1), Active = true, CreatedAt = now, CreatedBy = actorId
+        });
+        var ruleId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_ASSIGNMENT_AUTHORITY_RULE_SEQ", id => db.AssignmentAuthorityRules.AnyAsync(x => x.Id >= id));
+        db.AssignmentAuthorityRules.Add(new Fr021AssignmentAuthorityRuleRow
+        {
+            Id = ruleId, PermissionCode = "TICKET_ASSIGN_TEAM", TargetRelation = "OWN_TEAM", Mode = "ASSIGN",
+            Enabled = true, NotifyTargetManager = false, RequireManagerAcceptance = false,
+            ValidFrom = now.AddMinutes(-1), Version = 1, CreatedAt = now, CreatedBy = actorId
+        });
+
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        return new LifecycleAuthorizationFixture(actorId, assigneeId, departmentId, teamId, roleId, membershipId, ruleId, provenance);
+    }
+
+    private static async Task AddExactTicketScopeAsync(TicketsDbContext db, LifecycleAuthorizationFixture fixture, long ticketId)
+    {
+        var scopeId = await NextSafeSequenceIdAsync(db, "PA_TICKETS_ROLE_SCOPE_SEQ", id => db.AdministrationUserRoleScopes.AnyAsync(x => x.Id >= id));
+        db.AdministrationUserRoleScopes.Add(new AdministrationUserRoleScopeRow
+        {
+            Id = scopeId, UserRoleId = fixture.MembershipId, ScopeType = "RECORD", ResourceType = "TICKET",
+            ResourceId = ticketId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ValidFrom = DateTimeOffset.UtcNow.AddMinutes(-1), Active = true,
+            CreatedAt = DateTimeOffset.UtcNow, CreatedBy = fixture.ActorId
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task DeleteLifecycleAuthorizationFixtureAsync(TicketsDbContext db, LifecycleAuthorizationFixture fixture)
+    {
+        await db.AssignmentAuthorityRules.Where(x => x.Id == fixture.RuleId).ExecuteDeleteAsync();
+        await db.AdministrationUserRoleScopes.Where(x => x.UserRoleId == fixture.MembershipId).ExecuteDeleteAsync();
+        await db.AdministrationRolePermissions.Where(x => x.RoleId == fixture.RoleId).ExecuteDeleteAsync();
+        await db.AdministrationUserRoles.Where(x => x.Id == fixture.MembershipId).ExecuteDeleteAsync();
+        await db.AdministrationRoles.Where(x => x.Id == fixture.RoleId).ExecuteDeleteAsync();
+        await db.AdministrationUsers.Where(x => x.Id == fixture.AssigneeId || x.Id == fixture.ActorId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.DepartmentId, (long?)null).SetProperty(x => x.TeamId, (long?)null));
+        await db.AdministrationUsers.Where(x => x.Id == fixture.AssigneeId).ExecuteDeleteAsync();
+        await db.AdministrationTeams.Where(x => x.Id == fixture.TeamId).ExecuteDeleteAsync();
+        await db.AdministrationDepartments.Where(x => x.Id == fixture.DepartmentId).ExecuteDeleteAsync();
+        await db.AdministrationUsers.Where(x => x.Id == fixture.ActorId).ExecuteDeleteAsync();
+    }
+
+    private static async Task<long> NextSafeSequenceIdAsync(TicketsDbContext db, string sequenceName, Func<long, Task<bool>> collisionCheck)
+    {
+        var sql = sequenceName switch
+        {
+            "PA_TICKETS_USER_SEQ" => "SELECT nextval('public.\"PA_TICKETS_USER_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_DEPARTMENT_SEQ" => "SELECT nextval('public.\"PA_TICKETS_DEPARTMENT_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_TEAM_SEQ" => "SELECT nextval('public.\"PA_TICKETS_TEAM_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_ROLE_SEQ" => "SELECT nextval('public.\"PA_TICKETS_ROLE_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_USER_ROLE_SEQ" => "SELECT nextval('public.\"PA_TICKETS_USER_ROLE_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_ROLE_PERMISSION_SEQ" => "SELECT nextval('public.\"PA_TICKETS_ROLE_PERMISSION_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_ROLE_SCOPE_SEQ" => "SELECT nextval('public.\"PA_TICKETS_ROLE_SCOPE_SEQ\"'::regclass) AS \"Value\"",
+            "PA_TICKETS_ASSIGNMENT_AUTHORITY_RULE_SEQ" => "SELECT nextval('public.\"PA_TICKETS_ASSIGNMENT_AUTHORITY_RULE_SEQ\"'::regclass) AS \"Value\"",
+            _ => throw new InvalidOperationException("Unapproved fixture sequence.")
+        };
+        var id = await db.Database.SqlQueryRaw<long>(sql).SingleAsync();
+        if (await collisionCheck(id))
+            throw new InvalidOperationException($"Fixture sequence {sequenceName} returned an ID at or below an existing key; stop without retry. The sequence value was consumed.");
+        return id;
     }
 
     private static ServiceProvider BuildProvider()

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
@@ -109,8 +111,8 @@ internal sealed class LocalE2eS503InspectionException : InvalidOperationExceptio
 internal static class LocalE2eS503ReadOnlyInspection
 {
     internal const string Operation = "S5-03_READ_ONLY_FINGERPRINT";
-    internal const string ArtifactRelativePath = "tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql";
-    internal const string ArtifactSha256 = "2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8";
+    internal const string ArtifactRelativePath = "tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql";
+    internal const string ArtifactSha256 = "6092C5C53E8E1BEAC07F318D57475368FC6CF73050045758F65FF91750326342";
     internal const string PolicySha256 = "17DCC7EBF56F696E11A4C86298B0A431BB46AB1D577A7ED4A35CFC5030448866";
     private static readonly TimeSpan MaximumAuthorization = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan MaximumEvidenceAge = TimeSpan.FromMinutes(5);
@@ -151,7 +153,7 @@ internal static class LocalE2eS503ReadOnlyInspection
             var root = Path.GetFullPath(repositoryRoot);
             var currentSid = GetCurrentWindowsSid();
             ValidateAuthorization(authorization, nowUtc, currentSid);
-            ValidatePrivilegeEvidence(privilegeEvidence, nowUtc);
+            ValidatePrivilegeEvidence(Operation, privilegeEvidence, nowUtc);
             stage = "ARTIFACT";
             var artifact = LoadPinnedArtifact(root);
             artifactHash = artifact.Sha256;
@@ -170,7 +172,7 @@ internal static class LocalE2eS503ReadOnlyInspection
 
             // Recheck the time and revocation evidence immediately before opening the socket.
             ValidateAuthorization(authorization, DateTimeOffset.UtcNow, currentSid);
-            ValidatePrivilegeEvidence(privilegeEvidence, DateTimeOffset.UtcNow);
+            ValidatePrivilegeEvidence(Operation, privilegeEvidence, DateTimeOffset.UtcNow);
 
             stage = "CONNECT";
             await using var connection = new NpgsqlConnection(builder.ConnectionString);
@@ -240,8 +242,10 @@ internal static class LocalE2eS503ReadOnlyInspection
             throw new LocalE2eS503InspectionException("REVOCATION_CHECK_MISSING_OR_STALE", "A current, active revocation check is required immediately before connection.");
     }
 
-    internal static void ValidatePrivilegeEvidence(LocalE2eS503PrivilegeEvidence? evidence, DateTimeOffset nowUtc)
+    internal static void ValidatePrivilegeEvidence(string operation, LocalE2eS503PrivilegeEvidence? evidence, DateTimeOffset nowUtc)
     {
+        if (operation is not ("LOCAL_E2E_POSTGRES_PRIVILEGE_PREFLIGHT" or "S5-03_READ_ONLY_FINGERPRINT"))
+            throw new LocalE2eS503InspectionException("PRIVILEGE_OPERATION_NOT_ALLOWLISTED", "The owner-role exception applies only to the two fixed local read-only inspections.");
         if (evidence is null)
             throw new LocalE2eS503InspectionException("PRIVILEGE_EVIDENCE_MISSING", "Owner-collected effective least-privilege evidence is required.");
         if (evidence.TargetHost != "::1" || evidence.TargetPort != 5432 ||
@@ -250,21 +254,46 @@ internal static class LocalE2eS503ReadOnlyInspection
             evidence.CapturedAtUtc.Offset != TimeSpan.Zero ||
             evidence.CapturedAtUtc > nowUtc || nowUtc - evidence.CapturedAtUtc > MaximumEvidenceAge)
             throw new LocalE2eS503InspectionException("PRIVILEGE_EVIDENCE_INVALID_OR_STALE", "Privilege evidence must be fresh, attributable, and bound to the exact target.");
+        // The owner-approved local exception accepts this exact development
+        // role's standing object-write privileges. The invocation remains
+        // read-only through SET TRANSACTION READ ONLY and the two-artifact
+        // allowlist. Role-level escalation capabilities and memberships still
+        // fail closed. This exception is not usable for other targets/roles.
         if (!evidence.ReadOnlyCatalogScopeOnly || evidence.IsSuperuser || evidence.CanCreateRole ||
             evidence.CanCreateDatabase || evidence.CanReplicate || evidence.CanBypassRowLevelSecurity ||
-            evidence.CanWriteApplicationTables || evidence.CanWriteSchema || evidence.CanWriteSequences ||
             evidence.EffectiveRoleMemberships is null || evidence.EffectiveRoleMemberships.Count != 0)
-            throw new LocalE2eS503InspectionException("PRIVILEGE_SCOPE_EXCESS", "Effective privileges exceed the read-only catalog-inspection boundary.");
+            throw new LocalE2eS503InspectionException("PRIVILEGE_SCOPE_EXCESS", "Role-level escalation or membership facts exceed the fixed local inspection exception.");
     }
 
     internal static void ValidateSessionIdentity(LocalE2eS503SessionIdentity identity)
     {
-        if (identity.Database != "pa_tickets_codex_e2e" ||
-            identity.Role != "pa_tickets_codex" ||
-            identity.ServerAddress != "::1" ||
-            identity.ServerPort != 5432 ||
-            !string.Equals(identity.TransactionReadOnly, "on", StringComparison.OrdinalIgnoreCase))
-            throw new LocalE2eS503InspectionException("SESSION_IDENTITY_MISMATCH", "Database, role, IPv6 server address, port, or read-only transaction state did not match.");
+        if (!string.Equals(identity.Database, "pa_tickets_codex_e2e", StringComparison.Ordinal))
+            throw new LocalE2eS503InspectionException("SESSION_DATABASE_MISMATCH", "The current database does not match the approved local E2E target.");
+        if (!string.Equals(identity.Role, "pa_tickets_codex", StringComparison.Ordinal))
+            throw new LocalE2eS503InspectionException("SESSION_ROLE_MISMATCH", "The effective current role does not match the approved local E2E role.");
+        if (!IsExactIpv6Loopback(identity.ServerAddress))
+            throw new LocalE2eS503InspectionException("SESSION_ADDRESS_MISMATCH", "The PostgreSQL session server address is not IPv6 loopback ::1.");
+        if (identity.ServerPort != 5432)
+            throw new LocalE2eS503InspectionException("SESSION_PORT_MISMATCH", "The PostgreSQL session server port does not match 5432.");
+        if (!string.Equals(identity.TransactionReadOnly, "on", StringComparison.OrdinalIgnoreCase))
+            throw new LocalE2eS503InspectionException("SESSION_READ_ONLY_MISMATCH", "The PostgreSQL session is not in a read-only transaction.");
+    }
+
+    private static bool IsExactIpv6Loopback(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var addressText = value;
+        var slash = value.IndexOf('/');
+        if (slash >= 0)
+        {
+            if (!int.TryParse(value[(slash + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var prefixLength) || prefixLength != 128)
+                return false;
+            addressText = value[..slash];
+        }
+
+        return IPAddress.TryParse(addressText, out var address) &&
+               address.AddressFamily == AddressFamily.InterNetworkV6 &&
+               address.Equals(IPAddress.IPv6Loopback);
     }
 
     internal static (string Sql, string Sha256) LoadPinnedArtifact(string repositoryRoot)

@@ -82,6 +82,13 @@ public sealed class RoleAuthorizationPolicyTests
         Assert.True(RoleAuthorizationPolicy.AllowsPermissionCode("ADMIN", "AUDIT_EXPORT"));
     }
 
+    [Fact]
+    public void Ordinary_user_cannot_receive_the_fr021_assignment_capability()
+    {
+        Assert.False(RoleAuthorizationPolicy.AllowsPermissionCode("USER", "TICKET_ASSIGN_TEAM"));
+        Assert.True(RoleAuthorizationPolicy.AllowsPermissionCode("M1_TEST_ASSIGNER", "TICKET_ASSIGN_TEAM"));
+    }
+
     [Theory]
     [InlineData("TICKET_READ")]
     [InlineData("TICKET_UPDATE")]

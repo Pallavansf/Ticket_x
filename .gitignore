@@ -29,6 +29,7 @@ package-lock.zip
 **/obj/
 # Test result output
 **/TestResults/
+test-results/evidence/
 # Local debug project output
 .debugwf/bin/
 .debugwf/obj/

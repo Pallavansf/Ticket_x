@@ -1,0 +1,28 @@
+# PA_TICKETS — Standing Local E2E Development Policy (proposed v1)
+
+**Status: OWNER REVIEW DRAFT — activate only when Mr.H explicitly adopts this text.** This replaces repeated single-operation paperwork **only** for the exact disposable local E2E target. It is not a claim that previously reported tests ran or that existing approvals changed. The existing sequence-inspection Approval A remains governed by the current active policy until this proposal is adopted and Codex reconciles the implementation.
+
+## Scope and assumptions
+- Single-developer local environment, development/test fixtures only; **no valuable customer, personal, or production data** is permitted in this database. Verify this assumption before activation. The database is **not empty**: live catalog previously reported 171 public objects; do not drop or recreate it on the theory that it contains no data.
+- Fixed PostgreSQL endpoint **IPv6 `::1`, port `5432`**, database `pa_tickets_codex_e2e`, user `pa_tickets_codex`; credentials from the existing noncommitted `PA_TICKETS_E2E_DB_PASSWORD` loader only. No alternate target, fallback, or CLI-provided raw SQL/connection string. Never use `pa_tickets_test`, `pa_tickets_h_verify`, or `pa_tickets_test_user`.
+- Does not apply to shared, staging or production environments. No relaxation of application authentication, RBAC, Spectator deny, audit integrity, validation, or concurrency controls. No Oracle changes. Migration 026 remains excluded.
+
+## Standing execution permissions after adoption
+1. **Read-only development inspection:** Codex may execute named, reviewed, fixed-target, pinned read-only catalog and sequence-inspection operations without preparing a new signed authorization packet each time. Require same-connection identity checks, explicit READ ONLY transaction, timeouts, evidence, rollback and no automatic retry after uncertain outcomes. Additions to the operation allowlist require a reviewed artifact/hash and focused guard tests; the policy itself can authorize such additions without a second signature envelope.
+2. **Bounded local provider tests:** Codex may run existing named PostgreSQL integration tests on this target, including fixture creation and exact-test-owned cleanup, **after confirming fixture isolation, expected side effects, schema and sequence preconditions**. Limit deletes to uniquely marked test-owned records. Preserve durable audit-maintenance effects and disclose nonrollbackable sequence increments. When a run fails ambiguously, stop and inspect state before any retry; never delete data with uncertain ownership. No test may weaken product authorization to pass.
+3. **Local schema evolution:** Codex may prepare and validate additive SQL migrations without per-action packets. **Actual execution still requires one explicit owner go-ahead per reviewed migration batch**, listing artifact paths/hashes, order, expected effects, preconditions, backup/recovery plan and verification. A batch approval covers only unchanged artifacts in that batch; not other migrations. No historical baseline replay, inferred ledger entries, blind sequence reseeding, bulk destructive DDL, mass updates or GRANT/revoke without their own explicit review and owner confirmation.
+4. **Fixtures:** For missing status/priority/RBAC grant rows, only the explicitly reviewed deterministic local test fixtures may be seeded. Unknown historical grant facts remain non-authorizing. Never fabricate migration history or silently activate stale grants.
+
+## Lightweight workflow for Codex
+- Confirm exact target and that database contains only disposable development fixtures; check actual repository state before touching files. Read SOP, FRD, SLICES, roadmap and decision pack; **this local policy overrides only their conflicting local operational-authorization paperwork**, not product requirements or acceptance criteria.
+- For read-only inspections: pin SQL and check hash; run bounded operation, collect sanitized evidence and reconcile results. No fresh owner form for each run once adopted.
+- For provider tests: use test-owned IDs, preflight collisions/sequence values, one bounded invocation and scoped cleanup; record actual outcomes. No fresh owner form for each test once adopted.
+- For schema writes: prepare exact additive batch and rollback/recovery plan; await one owner confirmation of that batch, then execute and validate. No auto-approval.
+- Keep a short result record (target, operation, UTC, relevant artifact/hash, commands, pass/fail, rows/side effects, cleanup and recovery status). No cryptographic signed envelope, Windows CNG ceremony, certificate/revocation service, ProgramData ACL workflow or per-test owner forms for this local target.
+- Stop on unexpected target, authentication, SQL errors, schema mismatch, authorization uncertainty or incomplete cleanup; report accurately. Treat unknown history as `UNKNOWN`.
+
+## Explicitly not relaxed
+Secret management; Git worktree safety; fixed-target identity; application-level authorization; audit-chain integrity; migration 026 exclusion; production/shared controls; evidence truthfulness; destructive operations and uncertain-outcome recovery. Local role's standing write permissions do not turn a read-only operation into permission to mutate.
+
+## Adoption
+Owner approval of this exact text is required before Codex changes the active runner/policy gates. Record the actual owner decision and effective entry time without inventing signatures or owner-message timestamps. Reconcile older conflicting local-only language in SOP/SLICES/FRD/decision pack. Historical superseded amendment remains historical; do not rewrite its hashes or prior evidence. No database call is required to adopt policy text.

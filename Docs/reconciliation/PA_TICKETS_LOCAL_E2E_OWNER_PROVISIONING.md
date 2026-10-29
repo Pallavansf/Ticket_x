@@ -1,6 +1,10 @@
-﻿# Local E2E trust: owner provisioning procedure
+# Local E2E trust: owner provisioning procedure
 
-**Prepared for explicit owner execution; not executed.** S5-01 and S5-03 remain blocked. This document does not authorize PostgreSQL access. The adopted amendment SHA-256 is B78980670B1E0E8E79C333A36D7B93F46633C02B2172088C8B33469BED28A18E. The only target is localhost, IPv6 ::1, port 5432, database pa_tickets_codex_e2e, role pa_tickets_codex. Use Windows PowerShell 5.1 as the actual owner. Do not record secrets, private keys or unrestricted process command lines.
+> **Policy reconciliation (2026-10-28):** The owner-approved simplified local policy direction recorded in the canonical decision pack supersedes the CNG, signed-envelope, ProgramData trust/revocation and custody-provisioning procedures below for exactly two read-only operations: the pinned privilege preflight and pinned S5-03 fingerprint at `::1:5432` / `pa_tickets_codex_e2e` / `pa_tickets_codex`. Those legacy procedures are retained as history and are not prerequisites for those two operations. This note does not authorize a database operation or apply to writes, migrations, provisioning, seeds, test writes, cleanup, or any other environment. See the current SLICES v4 S5-01 wording and canonical decision-pack addendum.
+
+> **Native launcher (2026-10-28):** `dotnet run --project tools/PA.Tickets.LocalE2eReadOnlyRunner -- --operation LOCAL_E2E_POSTGRES_PRIVILEGE_PREFLIGHT --execute-readonly` is the owner-invoked privilege-preflight entry point; substitute `S5-03_READ_ONLY_FINGERPRINT` only for the separately selected fingerprint. A native launcher avoids PowerShell script execution policy only as a launcher choice; it does not override organizational execution restrictions, authorize broader operations, or relax the two-operation target/artifact policy. The `.ps1` provisioning steps below remain historical and are not required for these read-only operations.
+
+**Prepared for explicit owner execution; not executed.** S5-01 and S5-03 remain open pending actual operation evidence. This document does not itself authorize PostgreSQL access. The historical amendment SHA-256 is B78980670B1E0E8E79C333A36D7B93F46633C02B2172088C8B33469BED28A18E. The only target is localhost, IPv6 ::1, port 5432, database pa_tickets_codex_e2e, role pa_tickets_codex. Use Windows PowerShell 5.1 as the actual owner. Do not record secrets, private keys or unrestricted process command lines.
 
 ## Confirm account and artifact
 
@@ -8,8 +12,8 @@
 $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $ownerSid
 if ($ownerSid -cnotmatch '^S-1-5-21-(?:\d+-){3}\d+$') { throw 'Unsupported owner SID; stop.' }
-$artifact = 'tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql'
-$artifactSha = '2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8'
+$artifact = 'tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql'
+$artifactSha = '6092C5C53E8E1BEAC07F318D57475368FC6CF73050045758F65FF91750326342'
 if ((Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash -cne $artifactSha) { throw 'Artifact mismatch; stop.' }
 ```
 
@@ -191,8 +195,8 @@ Construct a PowerShell object named $authorization with exactly these fields and
 ```text
 schemaVersion=1; operation=S5-03_READ_ONLY_FINGERPRINT; host=localhost; port=5432;
 database=pa_tickets_codex_e2e; role=pa_tickets_codex; operatorSid=<owner SID>;
-artifactPath=tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e.sql;
-artifactSha256=2CE9F2FD1943438821BFDD1C0DB481BD4C0F3F3D5E3618B69BB4280252923AD8;
+artifactPath=tests/scripts/postgresql-foundational-ddl-preflight-pa_tickets_codex_e2e_EXISTING_DB_REVIEW.sql;
+artifactSha256=6092C5C53E8E1BEAC07F318D57475368FC6CF73050045758F65FF91750326342;
 expectedEffects=READ_ONLY_CATALOG_FINGERPRINT_NO_SCHEMA_OR_DATA_CHANGE;
 validFromUtc=<UTC>; expiresAtUtc=<UTC>;
 excludedOperations=[pa_tickets_test,pa_tickets_h_verify,pa_tickets_test_user,migration_026,DROP_DATABASE,SCHEMA_RESET,BROAD_CLEANUP];

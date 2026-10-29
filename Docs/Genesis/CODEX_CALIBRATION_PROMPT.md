@@ -1,0 +1,11 @@
+# Codex — Recalibrate PA_TICKETS for fast, safe LOCAL E2E development
+
+Owner Mr.H requests a proportionate local-only testing workflow. **This prompt is for review and integration preparation, not automatic authorization to mutate the database.**
+
+Read `LOCAL_E2E_POLICY_PROPOSED.md`, the revised SOP, SLICES, FRD and readme provided with this package. Compare them against the **current worktree**, canonical decision pack, roadmap, existing runner and current sequence-preflight task. Do not replace newer repo content with stale uploaded snapshots. Produce minimal patches that implement the owner's adopted policy once its exact text is confirmed; otherwise clearly label the changes PROPOSED. Preserve Codex's in-progress Approval A work.
+
+Policy intent: disposable, sole-developer `::1:5432/pa_tickets_codex_e2e` as `pa_tickets_codex` only; no valuable customer/production data. Standing approval for pinned read-only inspections and bounded test-owned provider writes/cleanup **after adoption**; no fresh signed owner authorization per test. One owner go-ahead for each reviewed additive migration batch. Never bypass target/credential guards, transaction safety, audit-chain behavior, RBAC, or failure handling.
+
+Implementation tasks: (1) identify all outdated signed-packet/per-test approval assertions in SOP, SLICES, decision pack, runner and test guard; (2) reconcile only conflicting **local** policy; (3) retain named read-only operation pin checks, fixed target/session identity, timeout and rollback; (4) add a narrowly bounded opt-in test execution path that verifies test-owned IDs, schema/sequence readiness, and exact cleanup, with no arbitrary SQL or production fallback; (5) keep migrations behind one explicit reviewed batch approval and preserve UNKNOWN history; (6) run focused offline tests, then report exact changes/evidence and a direct next owner action. Do not execute the sequence preflight or provider tests in this policy-reconciliation task, and do not alter migrations 026/038 or run schema changes.
+
+Avoid certificate/envelope/independent-attestation machinery for this isolated local case. Do not declare S5-01/S5-03/M1 PASS based on documentation. Prioritize getting the repository persistence test running after sequence safety is verified.

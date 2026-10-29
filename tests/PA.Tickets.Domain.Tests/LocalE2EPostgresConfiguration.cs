@@ -16,6 +16,9 @@ internal static class LocalE2EPostgresConfiguration
     private const string DevelopmentSettingsFile = "src/PA.Tickets.Api/appsettings.Development.json";
 
     internal static IConfiguration LoadFromRepositoryRoot(string repositoryRoot)
+        => LoadFromRepositoryRoot(repositoryRoot, "TicketsPostgres", PasswordVariable, "pa_tickets_codex");
+
+    private static IConfiguration LoadFromRepositoryRoot(string repositoryRoot, string connectionName, string passwordVariable, string expectedRole)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repositoryRoot);
         var root = Path.GetFullPath(repositoryRoot);
@@ -23,7 +26,7 @@ internal static class LocalE2EPostgresConfiguration
         if (!File.Exists(secretPath))
         {
             throw new InvalidOperationException(
-                $"Local PostgreSQL E2E configuration is missing {LocalSecretFile} or {PasswordVariable}. " +
+                $"Local PostgreSQL E2E configuration is missing {LocalSecretFile} or {passwordVariable}. " +
                 "Create the local-only file and set the required variable; the credential value is never logged.");
         }
         if ((File.GetAttributes(secretPath) & FileAttributes.ReparsePoint) != 0)
@@ -36,25 +39,28 @@ internal static class LocalE2EPostgresConfiguration
             .AddJsonFile(Path.Combine(root, DevelopmentSettingsFile), optional: false, reloadOnChange: false)
             .Build();
 
-        return CreateConfiguration(settings, ReadPassword(secretPath));
+        return CreateConfiguration(settings, ReadPassword(secretPath, passwordVariable), connectionName, passwordVariable, expectedRole);
     }
 
     internal static IConfiguration CreateConfiguration(IConfiguration settings, string password)
+        => CreateConfiguration(settings, password, "TicketsPostgres", PasswordVariable, "pa_tickets_codex");
+
+    private static IConfiguration CreateConfiguration(IConfiguration settings, string password, string connectionName, string passwordVariable, string expectedRole)
     {
         ArgumentNullException.ThrowIfNull(settings);
         if (string.IsNullOrWhiteSpace(password) || password.IndexOfAny(['\r', '\n', '\0']) >= 0)
         {
             throw new InvalidOperationException(
-                $"Local PostgreSQL E2E configuration requires a non-empty single-line {PasswordVariable}; the credential value is never logged.");
+                $"Local PostgreSQL E2E configuration requires a non-empty single-line {passwordVariable}; the credential value is never logged.");
         }
 
         var provider = settings["Database:Provider"];
         if (!string.Equals(provider, "PostgreSQL", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Local PostgreSQL E2E configuration requires Database:Provider=PostgreSQL.");
 
-        var configuredConnectionString = settings.GetConnectionString("TicketsPostgres");
+        var configuredConnectionString = settings.GetConnectionString(connectionName);
         if (string.IsNullOrWhiteSpace(configuredConnectionString))
-            throw new InvalidOperationException("Local PostgreSQL E2E configuration requires ConnectionStrings:TicketsPostgres in Development settings.");
+            throw new InvalidOperationException($"Local PostgreSQL E2E configuration requires ConnectionStrings:{connectionName} in Development settings.");
 
         NpgsqlConnectionStringBuilder builder;
         try
@@ -63,7 +69,7 @@ internal static class LocalE2EPostgresConfiguration
         }
         catch (ArgumentException)
         {
-            throw new InvalidOperationException("Local PostgreSQL E2E ConnectionStrings:TicketsPostgres is invalid.");
+            throw new InvalidOperationException("Local PostgreSQL E2E ConnectionStrings configuration is invalid.");
         }
 
         if (!string.IsNullOrEmpty(builder.Password))
@@ -71,7 +77,7 @@ internal static class LocalE2EPostgresConfiguration
         if (!string.Equals(builder.Host, "::1", StringComparison.OrdinalIgnoreCase) ||
             builder.Port != 5432 ||
             !string.Equals(builder.Database, "pa_tickets_codex_e2e", StringComparison.Ordinal) ||
-            !string.Equals(builder.Username, "pa_tickets_codex", StringComparison.Ordinal) ||
+            !string.Equals(builder.Username, expectedRole, StringComparison.Ordinal) ||
             builder.SslMode != SslMode.Disable)
         {
             throw new InvalidOperationException("Local PostgreSQL E2E settings do not match the approved fixed IPv6 loopback target.");
@@ -105,7 +111,7 @@ internal static class LocalE2EPostgresConfiguration
         }
     }
 
-    private static string ReadPassword(string secretPath)
+    private static string ReadPassword(string secretPath, string passwordVariable)
     {
         string? password = null;
         foreach (var originalLine in File.ReadLines(secretPath))
@@ -113,22 +119,22 @@ internal static class LocalE2EPostgresConfiguration
             var line = originalLine.Trim();
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var separator = line.IndexOf('=');
-            if (separator < 0 || !string.Equals(line[..separator].Trim(), PasswordVariable, StringComparison.OrdinalIgnoreCase)) continue;
+            if (separator < 0 || !string.Equals(line[..separator].Trim(), passwordVariable, StringComparison.OrdinalIgnoreCase)) continue;
             if (password is not null)
-                throw new InvalidOperationException($"Local PostgreSQL E2E configuration contains duplicate {PasswordVariable} entries; the credential value is never logged.");
+                throw new InvalidOperationException($"Local PostgreSQL E2E configuration contains duplicate {passwordVariable} entries; the credential value is never logged.");
             var value = line[(separator + 1)..].Trim();
             if (value.Length > 0 && (value[0] == '\'' || value[0] == '"'))
             {
                 var quote = value[0];
                 if (value.Length < 2 || value[^1] != quote)
-                    throw new InvalidOperationException($"Local PostgreSQL E2E configuration has malformed quoting for {PasswordVariable}; the credential value is never logged.");
+                    throw new InvalidOperationException($"Local PostgreSQL E2E configuration has malformed quoting for {passwordVariable}; the credential value is never logged.");
                 value = value[1..^1];
             }
             if (string.IsNullOrWhiteSpace(value) || value.IndexOfAny(['\r', '\n', '\0']) >= 0)
-                throw new InvalidOperationException($"Local PostgreSQL E2E configuration has an empty or invalid {PasswordVariable}; the credential value is never logged.");
+                throw new InvalidOperationException($"Local PostgreSQL E2E configuration has an empty or invalid {passwordVariable}; the credential value is never logged.");
             password = value;
         }
         return password ?? throw new InvalidOperationException(
-            $"Local PostgreSQL E2E configuration does not define {PasswordVariable} in {LocalSecretFile}; the credential value is never logged.");
+            $"Local PostgreSQL E2E configuration does not define {passwordVariable} in {LocalSecretFile}; the credential value is never logged.");
     }
 }

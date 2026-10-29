@@ -99,6 +99,7 @@ public sealed class AdministrationRolePermissionRow
     [Column("D_VALID_TO")] public DateTimeOffset? ValidTo { get; set; }
     [Column("S_EFFECTIVE_STATUS")] public string EffectiveStatus { get; set; } = "UNKNOWN";
     [Column("N_ACTIVE")] public bool Active { get; set; }
+    [Column("S_PROVENANCE_REF")] public string? ProvenanceRef { get; set; }
     [Column("D_UPDATED_AT")] public DateTimeOffset? UpdatedAt { get; set; }
     [Column("N_UPDATED_BY")] public long? UpdatedBy { get; set; }
 }
@@ -131,6 +132,23 @@ public sealed class AdministrationUserClientRow
     [Column("D_VALID_FROM")] public DateTimeOffset ValidFrom { get; set; }
     [Column("D_VALID_TO")] public DateTimeOffset? ValidTo { get; set; }
     [Column("N_ACTIVE")] public bool Active { get; set; }
+    [Column("D_CREATED_AT")] public DateTimeOffset CreatedAt { get; set; }
+    [Column("N_CREATED_BY")] public long CreatedBy { get; set; }
+}
+
+[Table("PA_TICKETS_ASSIGNMENT_AUTHORITY_RULE")]
+public sealed class Fr021AssignmentAuthorityRuleRow
+{
+    [Key, Column("N_ASSIGNMENT_RULE_ID")] public long Id { get; set; }
+    [Column("S_PERMISSION_CODE")] public string PermissionCode { get; set; } = "";
+    [Column("S_TARGET_RELATION")] public string TargetRelation { get; set; } = "";
+    [Column("S_MODE")] public string Mode { get; set; } = "";
+    [Column("N_NOTIFY_TARGET_MANAGER")] public bool NotifyTargetManager { get; set; }
+    [Column("N_REQUIRE_MANAGER_ACCEPTANCE")] public bool RequireManagerAcceptance { get; set; }
+    [Column("N_ENABLED")] public bool Enabled { get; set; }
+    [Column("D_VALID_FROM")] public DateTimeOffset ValidFrom { get; set; }
+    [Column("D_VALID_TO")] public DateTimeOffset? ValidTo { get; set; }
+    [Column("N_VERSION")] public int Version { get; set; }
     [Column("D_CREATED_AT")] public DateTimeOffset CreatedAt { get; set; }
     [Column("N_CREATED_BY")] public long CreatedBy { get; set; }
 }
